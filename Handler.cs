@@ -138,7 +138,7 @@ namespace net.vieapps.Services.PWAs
 					await context.WriteLogsAsync("PWAs", $"Begin request {requestUri}");
 				FileInfo fileInfo = null;
 
-				var filePath = Global.StaticSegments.Contains(pathSegments[0])
+				var filePath = (Global.StaticSegments.Contains(pathSegments[0])
 					? pathSegments[0].IsEquals("statics")
 						? UtilityService.GetAppSetting("Path:StaticFiles", Global.RootPath + "/data-files/statics".Replace('/', Path.DirectorySeparatorChar))
 						: Global.RootPath
@@ -146,11 +146,10 @@ namespace net.vieapps.Services.PWAs
 						? folder
 						: requestUri.Host.StartsWith("www.") && this.Maps.TryGetValue(requestUri.Host.Right(requestUri.Host.Length - 4), out folder)
 							? folder
-							: this.DefaultFolder;
-				filePath += ("/" + string.Join("/", pathSegments)).Replace("//", "/").Replace(@"\", "/").Replace('/', Path.DirectorySeparatorChar);
-				if (Global.StaticSegments.Contains(pathSegments[0]))
+							: this.DefaultFolder) + ("/" + string.Join("/", pathSegments)).Replace("//", "/").Replace(@"\", "/").Replace('/', Path.DirectorySeparatorChar);
+				if (Global.StaticSegments.Contains(pathSegments[0]) && pathSegments[0].IsEquals("statics"))
 					filePath = filePath.Replace($"{Path.DirectorySeparatorChar}statics{Path.DirectorySeparatorChar}statics{Path.DirectorySeparatorChar}", $"{Path.DirectorySeparatorChar}statics{Path.DirectorySeparatorChar}");
-				else if (filePath.EndsWith(Path.DirectorySeparatorChar))
+				if (filePath.EndsWith(Path.DirectorySeparatorChar))
 					filePath += "index.html";
 
 				// headers to reduce traffic

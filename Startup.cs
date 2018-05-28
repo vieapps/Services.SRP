@@ -51,7 +51,7 @@ namespace net.vieapps.Services.PWAs
 		public void ConfigureServices(IServiceCollection services)
 		{
 			services.AddResponseCompression(options => options.EnableForHttps = true);
-			services.AddLogging(builder => builder.SetMinimumLevel(this.Configuration.GetAppSetting("Logging/LogLevel/Default", UtilityService.GetAppSetting("Logs:Level", "Information")).ToEnum<LogLevel>()));
+			services.AddLogging(builder => builder.SetMinimumLevel(this.Configuration.GetAppSetting("Logging/LogLevel/Default", "Information").ToEnum<LogLevel>()));
 			services.AddHttpContextAccessor();
 		}
 
@@ -63,11 +63,11 @@ namespace net.vieapps.Services.PWAs
 			Console.OutputEncoding = Encoding.UTF8;
 
 			var loggerFactory = app.ApplicationServices.GetService<ILoggerFactory>();
-			var logLevel = this.Configuration.GetAppSetting("Logging/LogLevel/Default", UtilityService.GetAppSetting("Logs:Level", "Information")).ToEnum<LogLevel>();
+			var logLevel = this.Configuration.GetAppSetting("Logging/LogLevel/Default", "Information").ToEnum<LogLevel>();
 			var path = UtilityService.GetAppSetting("Path:Logs");
 			if (!string.IsNullOrWhiteSpace(path) && Directory.Exists(path))
 			{
-				path = Path.Combine(path, "{Date}" + $"_{Global.ServiceName.ToLower()}.http.txt");
+				path = Path.Combine(path, "{Date}" + $"_{Global.ServiceName.ToLower()}.txt");
 				loggerFactory.AddFile(path, logLevel);
 			}
 			else
