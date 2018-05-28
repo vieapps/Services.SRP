@@ -41,7 +41,7 @@ namespace net.vieapps.Services.PWAs
 
 		public async Task Invoke(HttpContext context)
 		{
-			// allow GET only
+			// only allow GET method
 			if (!context.Request.Method.IsEquals("GET"))
 			{
 				context.ShowHttpError((int)HttpStatusCode.MethodNotAllowed, $"Method {context.Request.Method} is not allowed", "MethodNotAllowed", context.GetCorrelationID());
@@ -65,17 +65,20 @@ namespace net.vieapps.Services.PWAs
 
 		#region Prepare attributes
 		bool AlwaysUseSecureConnections { get; set; } = true;
+
 		bool RedirectToNoneWWW { get; set; } = true;
-		string RootFolder { get; set; } = "PWAs";
+
+		string DefaultFolder { get; set; } = "PWAs";
+
 		Dictionary<string, string> Maps { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
 		void Prepare()
 		{
-			this.AlwaysUseSecureConnections = "true".IsEquals(UtilityService.GetAppSetting("AlwaysUseSecureConnections", "true"));
-			this.RedirectToNoneWWW = "true".IsEquals(UtilityService.GetAppSetting("RedirectToNoneWWW", "true"));
-			this.RootFolder = UtilityService.GetAppSetting("RootFolder", "PWAs");
-			if (this.RootFolder.IndexOf(Path.DirectorySeparatorChar) < 0)
-				this.RootFolder = Path.Combine(Global.RootPath, this.RootFolder);
+			this.AlwaysUseSecureConnections = "true".IsEquals(UtilityService.GetAppSetting("PWAs:AlwaysUseSecureConnections", "true"));
+			this.RedirectToNoneWWW = "true".IsEquals(UtilityService.GetAppSetting("PWAs:RedirectToNoneWWW", "true"));
+			this.DefaultFolder = UtilityService.GetAppSetting("PWAs:DefaultFolder", "PWAs");
+			if (this.DefaultFolder.IndexOf(Path.DirectorySeparatorChar) < 0)
+				this.DefaultFolder = Path.Combine(Global.RootPath, this.DefaultFolder);
 
 			if (ConfigurationManager.GetSection("net.vieapps.maps") is AppConfigurationSectionHandler config)
 				if (config.Section.SelectNodes("map") is XmlNodeList maps)
@@ -88,17 +91,16 @@ namespace net.vieapps.Services.PWAs
 							if (!string.IsNullOrWhiteSpace(folder))
 							{
 								if (folder.IndexOf(Path.DirectorySeparatorChar) < 0)
-									folder = Path.Combine(this.RootFolder, folder);
-								if (Directory.Exists(folder))
-									this.Maps[host] = folder;
+									folder = Path.Combine(this.DefaultFolder, folder);
+								this.Maps[host] = Directory.Exists(folder) ? folder : Path.Combine(this.DefaultFolder, map.Attributes["folder"].Value);
 							}
 						}
 					});
 
 			Global.Logger.LogInformation(
-				$"==> AlwaysUseSecureConnections: {this.AlwaysUseSecureConnections}" + "\r\n" +
-				$"==> RedirectToNoneWWW: {RedirectToNoneWWW}" + "\r\n" +
-				$"==> RootFolder: {RootFolder}" + "\r\n" +
+				$"==> Always use secure connections: {this.AlwaysUseSecureConnections}" + "\r\n" +
+				$"==> Redirect to none WWW: {RedirectToNoneWWW}" + "\r\n" +
+				$"==> Default folder: {DefaultFolder}" + "\r\n" +
 				$"==> Maps: \r\n\t\t{string.Join("\r\n\t\t", this.Maps.Select(m => $"{m.Key} -> {m.Value}"))}"
 			);
 		}
@@ -112,7 +114,8 @@ namespace net.vieapps.Services.PWAs
 			var pathSegments = requestUri.GetRequestPathSegments();
 
 			// redirect
-			if (!Global.StaticSegments.Contains(pathSegments[0]) && (((this.AlwaysUseSecureConnections && !requestUri.Scheme.IsEquals("https")) || (this.RedirectToNoneWWW && requestUri.Host.IsStartsWith("www")))))
+			var needRedirect = (this.AlwaysUseSecureConnections && !requestUri.Scheme.IsEquals("https")) || (this.RedirectToNoneWWW && requestUri.Host.IsStartsWith("www"));
+			if (needRedirect && !Global.StaticSegments.Contains(pathSegments[0]))
 			{
 				var url = this.AlwaysUseSecureConnections && !requestUri.Scheme.IsEquals("https")
 					? $"{requestUri}".Replace("http://", "https://")
@@ -143,7 +146,7 @@ namespace net.vieapps.Services.PWAs
 						? folder
 						: requestUri.Host.StartsWith("www.") && this.Maps.TryGetValue(requestUri.Host.Right(requestUri.Host.Length - 4), out folder)
 							? folder
-							: this.RootFolder;
+							: this.DefaultFolder;
 				filePath += ("/" + string.Join("/", pathSegments)).Replace("//", "/").Replace(@"\", "/").Replace('/', Path.DirectorySeparatorChar);
 				if (Global.StaticSegments.Contains(pathSegments[0]))
 					filePath = filePath.Replace($"{Path.DirectorySeparatorChar}statics{Path.DirectorySeparatorChar}statics{Path.DirectorySeparatorChar}", $"{Path.DirectorySeparatorChar}statics{Path.DirectorySeparatorChar}");
@@ -189,14 +192,14 @@ namespace net.vieapps.Services.PWAs
 
 				// response
 				context.SetResponseHeaders((int)HttpStatusCode.OK, new Dictionary<string, string>
-					{
-						{ "Content-Type", $"{fileMimeType}; charset=utf-8" },
-						{ "ETag", eTag },
-						{ "Last-Modified", $"{fileInfo.LastWriteTime.ToHttpString()}" },
-						{ "Cache-Control", "public" },
-						{ "Expires", $"{DateTime.Now.AddDays(7).ToHttpString()}" },
-						{ "X-CorrelationID", context.GetCorrelationID() }
-					});
+				{
+					{ "Content-Type", $"{fileMimeType}; charset=utf-8" },
+					{ "ETag", eTag },
+					{ "Last-Modified", $"{fileInfo.LastWriteTime.ToHttpString()}" },
+					{ "Cache-Control", "public" },
+					{ "Expires", $"{DateTime.Now.AddDays(7).ToHttpString()}" },
+					{ "X-CorrelationID", context.GetCorrelationID() }
+				});
 				await Task.WhenAll(
 					context.WriteAsync(fileContent, Global.CancellationTokenSource.Token),
 					!Global.IsDebugLogEnabled ? Task.CompletedTask : context.WriteLogsAsync("PWAs", $"Success response ({filePath} - {fileInfo.Length:#,##0} bytes)")
