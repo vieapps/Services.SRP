@@ -44,7 +44,7 @@ namespace net.vieapps.Services.PWAs
 			// only allow GET method
 			if (!context.Request.Method.IsEquals("GET"))
 			{
-				context.ShowHttpError((int)HttpStatusCode.MethodNotAllowed, $"Method {context.Request.Method} is not allowed", "MethodNotAllowed", context.GetCorrelationID());
+				context.ShowHttpError((int)HttpStatusCode.MethodNotAllowed, $"Method {context.Request.Method} is not allowed", "MethodNotAllowedException", context.GetCorrelationID());
 				return;
 			}
 
