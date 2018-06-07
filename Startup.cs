@@ -95,7 +95,7 @@ namespace net.vieapps.Services.PWAs
 			Global.ServiceProvider = app.ApplicationServices;
 			Global.RootPath = environment.ContentRootPath;
 
-			JsonConvert.DefaultSettings = () => new JsonSerializerSettings()
+			JsonConvert.DefaultSettings = () => new JsonSerializerSettings
 			{
 				Formatting = Formatting.None,
 				ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
