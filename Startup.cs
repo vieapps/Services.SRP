@@ -106,11 +106,10 @@ namespace net.vieapps.Services.PWAs
 			Handler.OpenWAMPChannels();
 
 			// middleware
-			if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-				app.UseForwardedHeaders(new ForwardedHeadersOptions
-				{
-					ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
-				});
+			app.UseForwardedHeaders(new ForwardedHeadersOptions
+			{
+				ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+			});
 			app.UseStatusCodeHandler();
 			app.UseResponseCompression();
 			app.UseMiddleware<Handler>();
