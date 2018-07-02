@@ -41,25 +41,34 @@ namespace net.vieapps.Services.PWAs
 
 		public async Task Invoke(HttpContext context)
 		{
-			// only allow GET method
-			if (!context.Request.Method.IsEquals("GET"))
-			{
-				context.ShowHttpError((int)HttpStatusCode.MethodNotAllowed, $"Method {context.Request.Method} is not allowed", "MethodNotAllowedException", context.GetCorrelationID());
-				return;
-			}
+			// load balancing health check
+			if (context.Request.Path.Value.IsEquals("/load-balancing-health-check"))
+				await context.WriteAsync("OK", "text/plain", null, 0, null, TimeSpan.Zero, null, Global.CancellationTokenSource.Token).ConfigureAwait(false);
 
-			// process the request
-			await this.ProcessRequestAsync(context).ConfigureAwait(false);
+			// request of PWAs' files
+			else
+			{
+				// only allow GET method
+				if (!context.Request.Method.IsEquals("GET"))
+					context.ShowHttpError((int)HttpStatusCode.MethodNotAllowed, $"Method {context.Request.Method} is not allowed", "MethodNotAllowedException", context.GetCorrelationID());
 
-			// invoke next middleware
-			try
-			{
-				await this.Next.Invoke(context).ConfigureAwait(false);
-			}
-			catch (InvalidOperationException) { }
-			catch (Exception ex)
-			{
-				Global.Logger.LogCritical($"Error occurred while invoking the next middleware: {ex.Message}", ex);
+				// process
+				else
+				{
+					// process the request
+					await this.ProcessRequestAsync(context).ConfigureAwait(false);
+
+					// invoke next middleware
+					try
+					{
+						await this.Next.Invoke(context).ConfigureAwait(false);
+					}
+					catch (InvalidOperationException) { }
+					catch (Exception ex)
+					{
+						Global.Logger.LogCritical($"Error occurred while invoking the next middleware: {ex.Message}", ex);
+					}
+				}
 			}
 		}
 
@@ -74,7 +83,7 @@ namespace net.vieapps.Services.PWAs
 
 		void Prepare()
 		{
-			this.AlwaysUseSecureConnections = "true".IsEquals(UtilityService.GetAppSetting("PWAs:AlwaysUseSecureConnections", "true"));
+			this.AlwaysUseSecureConnections = "true".IsEquals(UtilityService.GetAppSetting("PWAs:AlwaysUseSecureConnections", "false"));
 			this.RedirectToNoneWWW = "true".IsEquals(UtilityService.GetAppSetting("PWAs:RedirectToNoneWWW", "true"));
 			this.DefaultFolder = UtilityService.GetAppSetting("PWAs:DefaultFolder", "PWAs");
 			if (this.DefaultFolder.IndexOf(Path.DirectorySeparatorChar) < 0)
