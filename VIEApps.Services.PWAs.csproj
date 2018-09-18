@@ -7,14 +7,14 @@
 		<StartupObject>net.vieapps.Services.PWAs.Startup</StartupObject>
 		<AssemblyName>VIEApps.Services.PWAs</AssemblyName>
 		<AssemblyTitle>VIEApps NGX Progressive Web Apps Hosting</AssemblyTitle>
-		<AssemblyVersion>10.2.0.1806</AssemblyVersion>
-		<FileVersion>10.2.0.1806</FileVersion>
-		<InformationalVersion>v10.2.netcore-2.1+rev:2018.06.01</InformationalVersion>
+		<AssemblyVersion>10.2.1.1808</AssemblyVersion>
+		<FileVersion>10.2.1.1808</FileVersion>
+		<InformationalVersion>v10.2.netcore-2.1+rev:2018.08.01</InformationalVersion>
 		<Product>VIEApps NGX</Product>
 		<Company>VIEApps.net</Company>
 		<GeneratePackageOnBuild>false</GeneratePackageOnBuild>
 		<PackageId>VIEApps.Services.PWAs</PackageId>
-		<Version>10.2.0.1806</Version>
+		<Version>10.2.1.1808</Version>
 		<SignAssembly>false</SignAssembly>
 		<DelaySign>false</DelaySign>
 		<AssemblyOriginatorKeyFile>../VIEApps.Components.snk</AssemblyOriginatorKeyFile>
@@ -45,7 +45,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="Microsoft.AspNetCore.All" Version="2.1.0" />
+		<PackageReference Include="Microsoft.AspNetCore.All" Version="2.1.4" />
 		<PackageReference Include="Serilog.Extensions.Logging.File" Version="1.1.0" />
 	</ItemGroup>
 
