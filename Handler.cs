@@ -13,8 +13,6 @@ using System.Xml;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.StaticFiles;
-using Microsoft.AspNetCore.Authentication;
-using Microsoft.AspNetCore.Authentication.Cookies;
 
 using Microsoft.Extensions.Logging;
 
@@ -73,13 +71,13 @@ namespace net.vieapps.Services.PWAs
 		}
 
 		#region Prepare attributes
-		bool AlwaysUseSecureConnections { get; set; } = true;
+		internal bool AlwaysUseSecureConnections { get; private set; } = false;
 
-		bool RedirectToNoneWWW { get; set; } = true;
+		internal bool RedirectToNoneWWW { get; private set; } = true;
 
 		string DefaultFolder { get; set; } = "PWAs";
 
-		Dictionary<string, string> Maps { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		Dictionary<string, Tuple<string, string>> Maps { get; } = new Dictionary<string, Tuple<string, string>>(StringComparer.OrdinalIgnoreCase);
 
 		void Prepare()
 		{
@@ -101,13 +99,12 @@ namespace net.vieapps.Services.PWAs
 							{
 								if (folder.IndexOf(Path.DirectorySeparatorChar) < 0)
 									folder = Path.Combine(this.DefaultFolder, folder);
-								this.Maps[host] = Directory.Exists(folder) ? folder : Path.Combine(this.DefaultFolder, map.Attributes["folder"].Value);
+								this.Maps[host] = new Tuple<string, string>(Directory.Exists(folder) ? folder : Path.Combine(this.DefaultFolder, map.Attributes["folder"].Value), map.Attributes["notFound"]?.Value);
 							}
 						}
 					});
 
 			Global.Logger.LogInformation(
-				$"==> Always use secure connections: {this.AlwaysUseSecureConnections}" + "\r\n" +
 				$"==> Redirect to none WWW: {RedirectToNoneWWW}" + "\r\n" +
 				$"==> Default folder: {DefaultFolder}" + "\r\n" +
 				$"==> Maps: \r\n\t\t{string.Join("\r\n\t\t", this.Maps.Select(m => $"{m.Key} -> {m.Value}"))}"
@@ -123,19 +120,16 @@ namespace net.vieapps.Services.PWAs
 			var pathSegments = requestUri.GetRequestPathSegments();
 
 			// redirect
-			var needRedirect = (this.AlwaysUseSecureConnections && !requestUri.Scheme.IsEquals("https")) || (this.RedirectToNoneWWW && requestUri.Host.IsStartsWith("www"));
-			if (needRedirect && !Global.StaticSegments.Contains(pathSegments[0]))
+			if (!Global.StaticSegments.Contains(pathSegments[0]))
 			{
-				var url = this.AlwaysUseSecureConnections && !requestUri.Scheme.IsEquals("https")
-					? $"{requestUri}".Replace("http://", "https://")
-					: $"{requestUri}";
-
-				url = this.RedirectToNoneWWW && requestUri.Host.IsStartsWith("www")
-					? url.Replace("://www.", "://")
-					: url;
-
-				context.Redirect(url);
-				return;
+				var redirectToHttps = this.AlwaysUseSecureConnections && !requestUri.Scheme.IsEquals("https");
+				var redirectToNoneWWW = this.RedirectToNoneWWW && requestUri.Host.IsStartsWith("www");
+				if (redirectToHttps || redirectToNoneWWW)
+				{
+					var url = redirectToHttps ? $"{requestUri}".Replace("http://", "https://") : $"{requestUri}";
+					context.Redirect(redirectToNoneWWW ? url.Replace("://www.", "://") : url);
+					return;
+				}
 			}
 
 			// process the request
@@ -147,14 +141,15 @@ namespace net.vieapps.Services.PWAs
 					await context.WriteLogsAsync("PWAs", $"Begin request {requestUri}");
 				FileInfo fileInfo = null;
 
+				Tuple<string, string> mapInfo = null;
 				var filePath = (Global.StaticSegments.Contains(pathSegments[0])
 					? pathSegments[0].IsEquals("statics")
 						? UtilityService.GetAppSetting("Path:StaticFiles", Global.RootPath + "/data-files/statics".Replace('/', Path.DirectorySeparatorChar))
 						: Global.RootPath
-					: this.Maps.TryGetValue(requestUri.Host, out string folder)
-						? folder
-						: requestUri.Host.StartsWith("www.") && this.Maps.TryGetValue(requestUri.Host.Right(requestUri.Host.Length - 4), out folder)
-							? folder
+					: this.Maps.TryGetValue(requestUri.Host, out mapInfo)
+						? mapInfo.Item1
+						: requestUri.Host.StartsWith("www.") && this.Maps.TryGetValue(requestUri.Host.Right(requestUri.Host.Length - 4), out mapInfo)
+							? mapInfo.Item1
 							: this.DefaultFolder) + ("/" + string.Join("/", pathSegments)).Replace("//", "/").Replace(@"\", "/").Replace('/', Path.DirectorySeparatorChar);
 				if (Global.StaticSegments.Contains(pathSegments[0]) && pathSegments[0].IsEquals("statics"))
 					filePath = filePath.Replace($"{Path.DirectorySeparatorChar}statics{Path.DirectorySeparatorChar}statics{Path.DirectorySeparatorChar}", $"{Path.DirectorySeparatorChar}statics{Path.DirectorySeparatorChar}");
@@ -189,9 +184,11 @@ namespace net.vieapps.Services.PWAs
 
 				// check existed
 				fileInfo = fileInfo ?? new FileInfo(filePath);
+				if (!fileInfo.Exists && mapInfo != null && !string.IsNullOrWhiteSpace(mapInfo.Item2))
+					fileInfo = new FileInfo(Path.Combine(Path.IsPathRooted(mapInfo.Item1) ? mapInfo.Item1 : Path.Combine(this.DefaultFolder, mapInfo.Item1), mapInfo.Item2));
 				if (!fileInfo.Exists)
 					throw new FileNotFoundException($"Not Found [{requestUri}]");
-
+				
 				// prepare body
 				var fileMimeType = fileInfo.GetMimeType();
 				var fileContent = fileMimeType.IsEndsWith("json")
@@ -205,7 +202,7 @@ namespace net.vieapps.Services.PWAs
 					{ "ETag", eTag },
 					{ "Last-Modified", $"{fileInfo.LastWriteTime.ToHttpString()}" },
 					{ "Cache-Control", "public" },
-					{ "Expires", $"{DateTime.Now.AddDays(7).ToHttpString()}" },
+					{ "Expires", $"{DateTime.Now.AddMinutes(13).ToHttpString()}" },
 					{ "X-CorrelationID", context.GetCorrelationID() }
 				});
 				await Task.WhenAll(
@@ -226,17 +223,17 @@ namespace net.vieapps.Services.PWAs
 		{
 			Global.Logger.LogInformation($"Attempting to connect to WAMP router [{WAMPConnections.GetRouterStrInfo()}]");
 			Global.OpenWAMPChannels(
-				(sender, args) =>
+(Action<object, WampSharp.V2.Realm.WampSessionCreatedEventArgs>)((sender, args) =>
 				{
 					Global.Logger.LogInformation($"Incoming channel to WAMP router is established - Session ID: {args.SessionId}");
 					WAMPConnections.IncomingChannel.Update(WAMPConnections.IncomingChannelSessionID, Global.ServiceName, $"Incoming ({Global.ServiceName} HTTP service)");
 					Global.InterCommunicateMessageUpdater = WAMPConnections.IncomingChannel.RealmProxy.Services
-						.GetSubject<CommunicateMessage>("net.vieapps.rtu.communicate.messages.pwas")
+						.GetSubject<Services.CommunicateMessage>("net.vieapps.rtu.communicate.messages.pwas")
 						.Subscribe(
-							async (message) => await Handler.ProcessInterCommunicateMessageAsync(message).ConfigureAwait(false),
+(Action<CommunicateMessage>)(async (CommunicateMessage message) => await Handler.ProcessInterCommunicateMessageAsync((CommunicateMessage)message).ConfigureAwait(false)),
 							exception => Global.WriteLogs(Global.Logger, "RTU", $"{exception.Message}", exception)
 						);
-				},
+				}),
 				(sender, args) =>
 				{
 					Global.Logger.LogInformation($"Outgoing channel to WAMP router is established - Session ID: {args.SessionId}");
