@@ -15,7 +15,7 @@
 				"ASPNETCORE_ENVIRONMENT": "Development"
 			}
 		},
-		"VIEApps.Services.PWAs": {
+		"VIEApps.Services.SRP.Http": {
 			"commandName": "Project",
 			"launchBrowser": false,
 			"environmentVariables": {

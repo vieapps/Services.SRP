@@ -25,7 +25,7 @@ using net.vieapps.Components.Utility;
 using net.vieapps.Components.Caching;
 #endregion
 
-namespace net.vieapps.Services.PWAs
+namespace net.vieapps.Services.SRP
 {
 	public class Startup
 	{
@@ -35,7 +35,7 @@ namespace net.vieapps.Services.PWAs
 				.CaptureStartupErrors(true)
 				.UseStartup<Startup>()
 				.UseKestrel(options => options.AddServerHeader = false)
-				.UseUrls(args.FirstOrDefault(a => a.IsStartsWith("/listenuri:"))?.Replace("/listenuri:", "") ?? UtilityService.GetAppSetting("HttpUri:Listen", "http://0.0.0.0:8028").Trim())
+				.UseUrls(args.FirstOrDefault(a => a.IsStartsWith("/ListenURI:"))?.Replace("/ListenURI:", "", StringComparison.OrdinalIgnoreCase) ?? UtilityService.GetAppSetting("HttpUri:Listen", "http://0.0.0.0:8028").Trim())
 				.Build()
 				.Run();
 		}
@@ -44,35 +44,31 @@ namespace net.vieapps.Services.PWAs
 
 		public IConfiguration Configuration { get; }
 
-		public void ConfigureServices(IServiceCollection services)
-		{
-			services.AddResponseCompression(options => options.EnableForHttps = true);
-			services.AddLogging(builder => builder.SetMinimumLevel(this.Configuration.GetAppSetting("Logging/LogLevel/Default", "Information").ToEnum<LogLevel>()));
-			services.AddHttpContextAccessor();
-		}
+		LogLevel LogLevel => this.Configuration.GetAppSetting("Logging/LogLevel/Default", "Information").ToEnum<LogLevel>();
+
+		public void ConfigureServices(IServiceCollection services) => services.AddResponseCompression(options => options.EnableForHttps = true).AddLogging(builder => builder.SetMinimumLevel(this.LogLevel)).AddHttpContextAccessor();
 
 		public void Configure(IApplicationBuilder app, IApplicationLifetime appLifetime, IHostingEnvironment environment)
 		{
 			// settings
 			var stopwatch = Stopwatch.StartNew();
-			Global.ServiceName = "PWAs";
+			Global.ServiceName = "SRP";
 			Console.OutputEncoding = Encoding.UTF8;
 
 			var loggerFactory = app.ApplicationServices.GetService<ILoggerFactory>();
-			var logLevel = this.Configuration.GetAppSetting("Logging/LogLevel/Default", "Information").ToEnum<LogLevel>();
-			var path = UtilityService.GetAppSetting("Path:Logs");
-			if (!string.IsNullOrWhiteSpace(path) && Directory.Exists(path))
+			var logPath = UtilityService.GetAppSetting("Path:Logs");
+			if (!string.IsNullOrWhiteSpace(logPath) && Directory.Exists(logPath))
 			{
-				path = Path.Combine(path, "{Date}" + $"_{Global.ServiceName.ToLower()}.txt");
-				loggerFactory.AddFile(path, logLevel);
+				logPath = Path.Combine(logPath, "{Date}" + $"_{Global.ServiceName.ToLower()}.http.txt");
+				loggerFactory.AddFile(logPath, this.LogLevel);
 			}
 			else
-				path = null;
+				logPath = null;
 
 			Logger.AssignLoggerFactory(loggerFactory);
 			Global.Logger = loggerFactory.CreateLogger<Startup>();
 
-			Global.Logger.LogInformation($"The {Global.ServiceName} service is starting");
+			Global.Logger.LogInformation($"The {Global.ServiceName} HTTP service is starting");
 			Global.Logger.LogInformation($"Version: {typeof(Startup).Assembly.GetVersion()}");
 			Global.Logger.LogInformation($"Platform: {RuntimeInformation.FrameworkDescription} @ {(RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "Windows" : RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? "Linux" : "macOS")} {RuntimeInformation.OSArchitecture} ({(RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "Macintosh; Intel Mac OS X; " : "")}{RuntimeInformation.OSDescription.Trim()})");
 #if DEBUG
@@ -91,14 +87,25 @@ namespace net.vieapps.Services.PWAs
 				DateTimeZoneHandling = DateTimeZoneHandling.Local
 			};
 
-			// WAMP connections
-			Handler.OpenWAMPChannels();
+			// reverse proxies
+			var forwardedHeadersOptions = new ForwardedHeadersOptions
+			{
+				ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+			};
+			var knownProxies = UtilityService.GetAppSetting("ProxyIPs")?.ToList().Select(ip => IPAddress.Parse(ip)).ToList();
+			if (knownProxies != null)
+			{
+				forwardedHeadersOptions.RequireHeaderSymmetry = false;
+				forwardedHeadersOptions.ForwardLimit = null;
+				knownProxies.ForEach(ip => forwardedHeadersOptions.KnownProxies.Add(ip));
+			}
 
-			// middleware
-			app.UseForwardedHeaders(new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto });
-			app.UseStatusCodeHandler();
-			app.UseResponseCompression();
-			app.UseMiddleware<Handler>();
+			// setup middlewares
+			app.UseForwardedHeaders(forwardedHeadersOptions).UseStatusCodeHandler();
+			app.UseResponseCompression().UseMiddleware<Handler>();
+
+			// connect to WAMP router
+			Handler.OpenWAMPChannels();
 
 			// on started
 			appLifetime.ApplicationStarted.Register(() =>
@@ -106,16 +113,15 @@ namespace net.vieapps.Services.PWAs
 				Global.Logger.LogInformation($"Listening URI: {UtilityService.GetAppSetting("HttpUri:Listen", "http://0.0.0.0:8028")}");
 				Global.Logger.LogInformation($"WAMP router URI: {WAMPConnections.GetRouterStrInfo()}");
 				Global.Logger.LogInformation($"Root path: {Global.RootPath}");
-				Global.Logger.LogInformation($"Logs path: {UtilityService.GetAppSetting("Path:Logs")}");
-				Global.Logger.LogInformation($"Default logging level: {logLevel} [ASP.NET Core always set logging level by value of appsettings.json]");
-				if (!string.IsNullOrWhiteSpace(path))
-					Global.Logger.LogInformation($"Rolling log files is enabled - Path format: {path}");
-				Global.Logger.LogInformation($"Static files path: {UtilityService.GetAppSetting("Path:StaticFiles")}");
+				Global.Logger.LogInformation($"Default logging level: {this.LogLevel} [ASP.NET Core always set logging level by value of appsettings.json]");
+				Global.Logger.LogInformation($"Logging folder: {(logPath == null ? "None" : Path.GetDirectoryName(logPath))}");
+				Global.Logger.LogInformation($"Rolling log files is {(logPath == null ? "disabled" : $"enabled - Path format: {logPath}")}");
+				Global.Logger.LogInformation($"Static files path: {UtilityService.GetAppSetting("Path:StaticFiles", "None")}");
 				Global.Logger.LogInformation($"Static segments: {Global.StaticSegments.ToString(", ")}");
 				Global.Logger.LogInformation($"Show debugs: {Global.IsDebugLogEnabled} - Show results: {Global.IsDebugResultsEnabled} - Show stacks: {Global.IsDebugStacksEnabled}");
 
 				stopwatch.Stop();
-				Global.Logger.LogInformation($"The {Global.ServiceName} service is started - PID: {Process.GetCurrentProcess().Id} - Execution times: {stopwatch.GetElapsedTimes()}");
+				Global.Logger.LogInformation($"The {Global.ServiceName} HTTP service is started - PID: {Process.GetCurrentProcess().Id} - Execution times: {stopwatch.GetElapsedTimes()}");
 				Global.Logger = loggerFactory.CreateLogger<Handler>();
 			});
 
@@ -132,7 +138,7 @@ namespace net.vieapps.Services.PWAs
 			appLifetime.ApplicationStopped.Register(() =>
 			{
 				Global.CancellationTokenSource.Dispose();
-				Global.Logger.LogInformation($"The {Global.ServiceName} service is stopped");
+				Global.Logger.LogInformation($"The {Global.ServiceName} HTTP service is stopped");
 			});
 
 			// don't terminate the process immediately, wait for the Main thread to exit gracefully

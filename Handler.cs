@@ -8,7 +8,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Configuration;
-using System.Xml;
 
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Hosting;
@@ -25,70 +24,31 @@ using net.vieapps.Components.Security;
 using net.vieapps.Components.Utility;
 #endregion
 
-namespace net.vieapps.Services.PWAs
+namespace net.vieapps.Services.SRP
 {
 	public class Handler
 	{
 		RequestDelegate Next { get; }
+		bool RedirectToNoneWWW { get; set; } = true;
+		bool RedirectToHTTPS { get; set; } = false;
+		string DefaultDirectory { get; set; } = "apps";
+		string DefaultFile { get; set; } = "index.html";
+		Dictionary<string, Map> Maps { get; } = new Dictionary<string, Map>(StringComparer.OrdinalIgnoreCase);
 
 		public Handler(RequestDelegate next)
 		{
 			this.Next = next;
-			this.Prepare();
-		}
-
-		public async Task Invoke(HttpContext context)
-		{
-			// load balancing health check
-			if (context.Request.Path.Value.IsEquals("/load-balancing-health-check"))
-				await context.WriteAsync("OK", "text/plain", null, 0, null, TimeSpan.Zero, null, Global.CancellationTokenSource.Token).ConfigureAwait(false);
-
-			// request of PWAs' files
-			else
+			if (ConfigurationManager.GetSection("net.vieapps.services.srp.maps") is AppConfigurationSectionHandler config)
 			{
-				// only allow GET method
-				if (!context.Request.Method.IsEquals("GET"))
-					context.ShowHttpError((int)HttpStatusCode.MethodNotAllowed, $"Method {context.Request.Method} is not allowed", "MethodNotAllowedException", context.GetCorrelationID());
+				// global settings
+				this.RedirectToNoneWWW = "true".IsEquals(config.Section.Attributes["redirectToNoneWWW"]?.Value);
+				this.RedirectToHTTPS = "true".IsEquals(config.Section.Attributes["redirectToHTTPS"]?.Value);
+				this.DefaultDirectory = config.Section.Attributes["defaultDirectory"]?.Value ?? "apps";
+				this.DefaultDirectory = Path.IsPathRooted(this.DefaultDirectory) ? this.DefaultDirectory : Path.Combine(Global.RootPath, this.DefaultDirectory);
+				this.DefaultFile = config.Section.Attributes["defaultFile"]?.Value ?? "index.html";
 
-				// process
-				else
-				{
-					// process the request
-					await this.ProcessRequestAsync(context).ConfigureAwait(false);
-
-					// invoke next middleware
-					try
-					{
-						await this.Next.Invoke(context).ConfigureAwait(false);
-					}
-					catch (InvalidOperationException) { }
-					catch (Exception ex)
-					{
-						Global.Logger.LogCritical($"Error occurred while invoking the next middleware: {ex.Message}", ex);
-					}
-				}
-			}
-		}
-
-		#region Prepare attributes
-		internal bool AlwaysUseSecureConnections { get; private set; } = false;
-
-		internal bool RedirectToNoneWWW { get; private set; } = true;
-
-		string DefaultFolder { get; set; } = "PWAs";
-
-		Dictionary<string, Tuple<string, string>> Maps { get; } = new Dictionary<string, Tuple<string, string>>(StringComparer.OrdinalIgnoreCase);
-
-		void Prepare()
-		{
-			this.AlwaysUseSecureConnections = "true".IsEquals(UtilityService.GetAppSetting("PWAs:AlwaysUseSecureConnections", "false"));
-			this.RedirectToNoneWWW = "true".IsEquals(UtilityService.GetAppSetting("PWAs:RedirectToNoneWWW", "true"));
-			this.DefaultFolder = UtilityService.GetAppSetting("PWAs:DefaultFolder", "PWAs");
-			if (this.DefaultFolder.IndexOf(Path.DirectorySeparatorChar) < 0)
-				this.DefaultFolder = Path.Combine(Global.RootPath, this.DefaultFolder);
-
-			if (ConfigurationManager.GetSection("net.vieapps.maps") is AppConfigurationSectionHandler config)
-				if (config.Section.SelectNodes("map") is XmlNodeList maps)
+				// individual settings
+				if (config.Section.SelectNodes("map") is System.Xml.XmlNodeList maps)
 					maps.ToList().ForEach(map =>
 					{
 						var host = map.Attributes["host"]?.Value;
@@ -98,123 +58,167 @@ namespace net.vieapps.Services.PWAs
 							if (!string.IsNullOrWhiteSpace(folder))
 							{
 								if (folder.IndexOf(Path.DirectorySeparatorChar) < 0)
-									folder = Path.Combine(this.DefaultFolder, folder);
-								this.Maps[host] = new Tuple<string, string>(Directory.Exists(folder) ? folder : Path.Combine(this.DefaultFolder, map.Attributes["folder"].Value), map.Attributes["notFound"]?.Value);
+									folder = Path.Combine(this.DefaultDirectory, folder);
+								this.Maps[host.Trim().ToLower()] = new Map
+								{
+									Host = host.Trim().ToLower(),
+									Folder = Directory.Exists(folder) ? folder : Path.Combine(this.DefaultDirectory, folder),
+									NotFound = map.Attributes["notFound"]?.Value,
+									RedirectToNoneWWW = map.Attributes["redirectToNoneWWW"]?.Value != null ? "true".IsEquals(map.Attributes["redirectToNoneWWW"]?.Value) : this.RedirectToNoneWWW,
+									RedirectToHTTPS = map.Attributes["redirectToHTTPS"]?.Value != null ? "true".IsEquals(map.Attributes["redirectToHTTPS"]?.Value) : this.RedirectToHTTPS
+								};
 							}
 						}
 					});
-
+			}
 			Global.Logger.LogInformation(
-				$"==> Redirect to none WWW: {RedirectToNoneWWW}" + "\r\n" +
-				$"==> Default folder: {DefaultFolder}" + "\r\n" +
-				$"==> Maps: \r\n\t\t{string.Join("\r\n\t\t", this.Maps.Select(m => $"{m.Key} -> {m.Value}"))}"
+				$"=> Redirect to none WWW: {this.RedirectToNoneWWW}" + "\r\n" +
+				$"=> Redirect to HTTPs: {this.RedirectToHTTPS}" + "\r\n" +
+				$"=> Default directory: {this.DefaultDirectory}" + "\r\n" +
+				$"=> Default file: {this.DefaultFile}" + "\r\n" +
+				$"=> Maps: {(this.Maps.Count < 1 ? "None" : $"\r\n\t+ {string.Join("\r\n\t+ ", this.Maps.Select(m => $"{m.Key} => {m.Value.Folder + $" ({m.Value.RedirectToNoneWWW}/{m.Value.RedirectToHTTPS}/{m.Value.NotFound ?? "None"})"}"))}")}"
 			);
 		}
-		#endregion
+
+		public async Task Invoke(HttpContext context)
+		{
+			// load balancing health check
+			if (context.Request.Path.Value.IsEquals("/load-balancing-health-check"))
+				await context.WriteAsync("OK", "text/plain", null, 0, null, TimeSpan.Zero, null, Global.CancellationTokenSource.Token).ConfigureAwait(false);
+
+			else
+			{
+				// process the request
+				await this.ProcessRequestAsync(context).ConfigureAwait(false);
+
+				// invoke next middleware
+				try
+				{
+					await this.Next.Invoke(context).ConfigureAwait(false);
+				}
+				catch (InvalidOperationException) { }
+				catch (Exception ex)
+				{
+					Global.Logger.LogCritical($"Error occurred while invoking the next middleware: {ex.Message}", ex);
+				}
+			}
+		}
 
 		#region Process request
-		internal async Task ProcessRequestAsync(HttpContext context)
+		async Task ProcessRequestAsync(HttpContext context)
+		{
+			//  prepare
+			context.Items["PipelineStopwatch"] = Stopwatch.StartNew();
+			var requestUri = context.GetRequestUri();
+			if (Global.IsDebugLogEnabled)
+				await context.WriteLogsAsync("SRP", $"Begin request {requestUri}");
+
+			// request of static files
+			if (Global.StaticSegments.Contains(requestUri.GetRequestPathSegments().First()))
+				await context.ProcessStaticFileRequestAsync().ConfigureAwait(false);
+
+			// only allow GET method
+			else if (!context.Request.Method.IsEquals("GET"))
+				context.ShowHttpError((int)HttpStatusCode.MethodNotAllowed, $"Method {context.Request.Method} is not allowed", "MethodNotAllowedException", context.GetCorrelationID());
+
+			// process
+			else
+				try
+				{
+					var fileInfo = await this.ProcessFileRequestAsync(context).ConfigureAwait(false);
+					if (fileInfo != null && Global.IsDebugLogEnabled)
+						await context.WriteLogsAsync("SRP", $"Success response ({fileInfo.FullName} - {fileInfo.Length:#,##0} bytes)").ConfigureAwait(false);
+				}
+				catch (Exception ex)
+				{
+					await context.WriteLogsAsync("SRP", $"Failure response [{requestUri}]", ex).ConfigureAwait(false);
+					context.ShowHttpError(ex.GetHttpStatusCode(), ex.Message, ex.GetType().GetTypeName(true), context.GetCorrelationID(), ex, Global.IsDebugLogEnabled);
+				}
+		}
+
+		bool GetMap(string host, out Map mapInfo)
+		   => this.Maps.TryGetValue(host, out mapInfo)
+			   ? true
+			   : host.IsStartsWith("www.")
+				   ? this.Maps.TryGetValue(host.Right(host.Length - 4), out mapInfo)
+				   : false;
+
+		async Task<FileInfo> ProcessFileRequestAsync(HttpContext context)
 		{
 			// prepare
 			var requestUri = context.GetRequestUri();
-			var pathSegments = requestUri.GetRequestPathSegments();
+			this.GetMap(requestUri.Host, out Map mapInfo);
 
 			// redirect
-			if (!Global.StaticSegments.Contains(pathSegments[0]))
+			var redirectToHttps = (mapInfo != null ? mapInfo.RedirectToHTTPS : this.RedirectToHTTPS) && !requestUri.Scheme.IsEquals("https");
+			var redirectToNoneWWW = (mapInfo != null ? mapInfo.RedirectToNoneWWW : this.RedirectToNoneWWW) && requestUri.Host.StartsWith("www.");
+			if (redirectToHttps || redirectToNoneWWW)
 			{
-				var redirectToHttps = this.AlwaysUseSecureConnections && !requestUri.Scheme.IsEquals("https");
-				var redirectToNoneWWW = this.RedirectToNoneWWW && requestUri.Host.IsStartsWith("www");
-				if (redirectToHttps || redirectToNoneWWW)
-				{
-					var url = redirectToHttps ? $"{requestUri}".Replace("http://", "https://") : $"{requestUri}";
-					context.Redirect(redirectToNoneWWW ? url.Replace("://www.", "://") : url);
-					return;
-				}
-			}
-
-			// process the request
-			try
-			{
-				// prepare
-				context.Items["PipelineStopwatch"] = Stopwatch.StartNew();
+				var url = $"{requestUri}";
+				url = redirectToHttps ? url.Replace("http://", "https://") : url;
+				url = redirectToNoneWWW ? url.Replace("://www.", "://") : url;
 				if (Global.IsDebugLogEnabled)
-					await context.WriteLogsAsync("PWAs", $"Begin request {requestUri}");
-				FileInfo fileInfo = null;
-
-				Tuple<string, string> mapInfo = null;
-				var filePath = (Global.StaticSegments.Contains(pathSegments[0])
-					? pathSegments[0].IsEquals("statics")
-						? UtilityService.GetAppSetting("Path:StaticFiles", Global.RootPath + "/data-files/statics".Replace('/', Path.DirectorySeparatorChar))
-						: Global.RootPath
-					: this.Maps.TryGetValue(requestUri.Host, out mapInfo)
-						? mapInfo.Item1
-						: requestUri.Host.StartsWith("www.") && this.Maps.TryGetValue(requestUri.Host.Right(requestUri.Host.Length - 4), out mapInfo)
-							? mapInfo.Item1
-							: this.DefaultFolder) + ("/" + string.Join("/", pathSegments)).Replace("//", "/").Replace(@"\", "/").Replace('/', Path.DirectorySeparatorChar);
-				if (Global.StaticSegments.Contains(pathSegments[0]) && pathSegments[0].IsEquals("statics"))
-					filePath = filePath.Replace($"{Path.DirectorySeparatorChar}statics{Path.DirectorySeparatorChar}statics{Path.DirectorySeparatorChar}", $"{Path.DirectorySeparatorChar}statics{Path.DirectorySeparatorChar}");
-				if (filePath.EndsWith(Path.DirectorySeparatorChar))
-					filePath += "index.html";
-
-				// headers to reduce traffic
-				var eTag = "PWAs#" + $"{requestUri}".ToLower().GenerateUUID();
-				if (eTag.IsEquals(context.GetHeaderParameter("If-None-Match")))
-				{
-					var isNotModified = true;
-					var lastModifed = DateTime.Now.ToUnixTimestamp();
-					if (context.GetHeaderParameter("If-Modified-Since") != null)
-					{
-						fileInfo = new FileInfo(filePath);
-						if (fileInfo.Exists)
-						{
-							lastModifed = fileInfo.LastWriteTime.ToUnixTimestamp();
-							isNotModified = lastModifed <= context.GetHeaderParameter("If-Modified-Since").FromHttpDateTime().ToUnixTimestamp();
-						}
-						else
-							isNotModified = false;
-					}
-					if (isNotModified)
-					{
-						context.SetResponseHeaders((int)HttpStatusCode.NotModified, eTag, lastModifed, "public", context.GetCorrelationID());
-						if (Global.IsDebugLogEnabled)
-							await context.WriteLogsAsync("PWAs", $"Success response with status code 304 to reduce traffic ({filePath})").ConfigureAwait(false);
-						return;
-					}
-				}
-
-				// check existed
-				fileInfo = fileInfo ?? new FileInfo(filePath);
-				if (!fileInfo.Exists && mapInfo != null && !string.IsNullOrWhiteSpace(mapInfo.Item2))
-					fileInfo = new FileInfo(Path.Combine(Path.IsPathRooted(mapInfo.Item1) ? mapInfo.Item1 : Path.Combine(this.DefaultFolder, mapInfo.Item1), mapInfo.Item2));
-				if (!fileInfo.Exists)
-					throw new FileNotFoundException($"Not Found [{requestUri}]");
-				
-				// prepare body
-				var fileMimeType = fileInfo.GetMimeType();
-				var fileContent = fileMimeType.IsEndsWith("json")
-					? JObject.Parse(await UtilityService.ReadTextFileAsync(fileInfo, null, Global.CancellationTokenSource.Token).ConfigureAwait(false)).ToString(Newtonsoft.Json.Formatting.Indented).ToBytes()
-					: await UtilityService.ReadBinaryFileAsync(fileInfo, Global.CancellationTokenSource.Token).ConfigureAwait(false);
-
-				// response
-				context.SetResponseHeaders((int)HttpStatusCode.OK, new Dictionary<string, string>
-				{
-					{ "Content-Type", $"{fileMimeType}; charset=utf-8" },
-					{ "ETag", eTag },
-					{ "Last-Modified", $"{fileInfo.LastWriteTime.ToHttpString()}" },
-					{ "Cache-Control", "public" },
-					{ "Expires", $"{DateTime.Now.AddMinutes(13).ToHttpString()}" },
-					{ "X-CorrelationID", context.GetCorrelationID() }
-				});
-				await Task.WhenAll(
-					context.WriteAsync(fileContent, Global.CancellationTokenSource.Token),
-					!Global.IsDebugLogEnabled ? Task.CompletedTask : context.WriteLogsAsync("PWAs", $"Success response ({filePath} - {fileInfo.Length:#,##0} bytes)")
-				).ConfigureAwait(false);
+					await context.WriteLogsAsync("SRP", $"Redirect: {requestUri} => {url}");
+				context.Redirect(url);
+				return null;
 			}
-			catch (Exception ex)
+
+			// prepare file info
+			FileInfo fileInfo = null;
+			var filePath = $"{mapInfo?.Folder ?? this.DefaultDirectory}/{string.Join("/", requestUri.GetRequestPathSegments())}".Replace(@"\", "/").Replace("//", "/").Replace('/', Path.DirectorySeparatorChar);
+			filePath += filePath.EndsWith(Path.DirectorySeparatorChar) ? this.DefaultFile : "";
+
+			// check to reduce traffic
+			var eTag = "SRP#" + $"{requestUri}".ToLower().GenerateUUID();
+			if (eTag.IsEquals(context.GetHeaderParameter("If-None-Match")))
 			{
-				await context.WriteLogsAsync("PWAs", $"Failure response [{requestUri}]", ex).ConfigureAwait(false);
-				context.ShowHttpError(ex.GetHttpStatusCode(), ex.Message, ex.GetType().GetTypeName(true), context.GetCorrelationID(), ex, Global.IsDebugLogEnabled);
+				var isNotModified = true;
+				var lastModifed = DateTime.Now.ToUnixTimestamp();
+				if (context.GetHeaderParameter("If-Modified-Since") != null)
+				{
+					fileInfo = new FileInfo(filePath);
+					if (fileInfo.Exists)
+					{
+						lastModifed = fileInfo.LastWriteTime.ToUnixTimestamp();
+						isNotModified = lastModifed <= context.GetHeaderParameter("If-Modified-Since").FromHttpDateTime().ToUnixTimestamp();
+					}
+					else
+						isNotModified = false;
+				}
+				if (isNotModified)
+				{
+					context.SetResponseHeaders((int)HttpStatusCode.NotModified, eTag, lastModifed, "public", context.GetCorrelationID());
+					if (Global.IsDebugLogEnabled)
+						await context.WriteLogsAsync("SRP", $"Success response with status code 304 to reduce traffic ({filePath})").ConfigureAwait(false);
+					return fileInfo;
+				}
 			}
+
+			// check existed
+			fileInfo = fileInfo ?? new FileInfo(filePath);
+			if (!fileInfo.Exists && !string.IsNullOrWhiteSpace(mapInfo?.NotFound))
+				fileInfo = new FileInfo(Path.Combine(Path.IsPathRooted(mapInfo.Folder) ? mapInfo.Folder : Path.Combine(this.DefaultDirectory, mapInfo.Folder), mapInfo.NotFound));
+			if (!fileInfo.Exists)
+				throw new FileNotFoundException($"Not Found [{requestUri}]");
+
+			// prepare body
+			var fileMimeType = fileInfo.GetMimeType();
+			var fileContent = fileMimeType.IsEndsWith("json")
+				? JObject.Parse(await UtilityService.ReadTextFileAsync(fileInfo, null, Global.CancellationTokenSource.Token).ConfigureAwait(false)).ToString(Formatting.Indented).ToBytes()
+				: await UtilityService.ReadBinaryFileAsync(fileInfo, Global.CancellationTokenSource.Token).ConfigureAwait(false);
+
+			// response
+			context.SetResponseHeaders((int)HttpStatusCode.OK, new Dictionary<string, string>
+			{
+				{ "Content-Type", $"{fileMimeType}; charset=utf-8" },
+				{ "ETag", eTag },
+				{ "Last-Modified", $"{fileInfo.LastWriteTime.ToHttpString()}" },
+				{ "Cache-Control", "public" },
+				{ "Expires", $"{DateTime.Now.AddMinutes(13).ToHttpString()}" },
+				{ "X-CorrelationID", context.GetCorrelationID() }
+			});
+			await context.WriteAsync(fileContent, Global.CancellationTokenSource.Token).ConfigureAwait(false);
+			return fileInfo;
 		}
 		#endregion
 
@@ -223,24 +227,27 @@ namespace net.vieapps.Services.PWAs
 		{
 			Global.Logger.LogInformation($"Attempting to connect to WAMP router [{WAMPConnections.GetRouterStrInfo()}]");
 			Global.OpenWAMPChannels(
-(Action<object, WampSharp.V2.Realm.WampSessionCreatedEventArgs>)((sender, args) =>
+				(sender, args) =>
 				{
 					Global.Logger.LogInformation($"Incoming channel to WAMP router is established - Session ID: {args.SessionId}");
 					WAMPConnections.IncomingChannel.Update(WAMPConnections.IncomingChannelSessionID, Global.ServiceName, $"Incoming ({Global.ServiceName} HTTP service)");
 					Global.InterCommunicateMessageUpdater = WAMPConnections.IncomingChannel.RealmProxy.Services
-						.GetSubject<Services.CommunicateMessage>("net.vieapps.rtu.communicate.messages.pwas")
+						.GetSubject<CommunicateMessage>("net.vieapps.rtu.communicate.messages.pwas")
 						.Subscribe(
-(Action<CommunicateMessage>)(async (CommunicateMessage message) => await Handler.ProcessInterCommunicateMessageAsync((CommunicateMessage)message).ConfigureAwait(false)),
+							async message => await Handler.ProcessInterCommunicateMessageAsync(message).ConfigureAwait(false),
 							exception => Global.WriteLogs(Global.Logger, "RTU", $"{exception.Message}", exception)
 						);
-				}),
+				},
 				(sender, args) =>
 				{
 					Global.Logger.LogInformation($"Outgoing channel to WAMP router is established - Session ID: {args.SessionId}");
 					WAMPConnections.OutgoingChannel.Update(WAMPConnections.OutgoingChannelSessionID, Global.ServiceName, $"Outgoing ({Global.ServiceName} HTTP service)");
 					try
 					{
-						Task.WaitAll(new[] { Global.InitializeLoggingServiceAsync(), Global.InitializeRTUServiceAsync() }, waitingTimes > 0 ? waitingTimes : 6789, Global.CancellationTokenSource.Token);
+						Task.WaitAll(new[] {
+							Global.InitializeLoggingServiceAsync(),
+							Global.InitializeRTUServiceAsync()
+						}, waitingTimes > 0 ? waitingTimes : 6789, Global.CancellationTokenSource.Token);
 						Global.Logger.LogInformation("Helper services are succesfully initialized");
 					}
 					catch (Exception ex)
@@ -255,5 +262,14 @@ namespace net.vieapps.Services.PWAs
 		static Task ProcessInterCommunicateMessageAsync(CommunicateMessage message) => Task.CompletedTask;
 		#endregion
 
+	}
+
+	public class Map
+	{
+		public string Host { get; internal set; } = "";
+		public string Folder { get; internal set; } = "";
+		public bool RedirectToNoneWWW { get; internal set; } = false;
+		public bool RedirectToHTTPS { get; internal set; } = false;
+		public string NotFound { get; internal set; } = null;
 	}
 }
