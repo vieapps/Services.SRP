@@ -29,33 +29,30 @@ namespace net.vieapps.Services.SRP
 {
 	public class Startup
 	{
-		public static void Main(string[] args)
-		{
-			WebHost.CreateDefaultBuilder(args)
-				.CaptureStartupErrors(true)
-				.UseStartup<Startup>()
-				.UseKestrel(options => options.AddServerHeader = false)
-				.UseUrls(args.FirstOrDefault(a => a.IsStartsWith("/ListenURI:"))?.Replace("/ListenURI:", "", StringComparison.OrdinalIgnoreCase) ?? UtilityService.GetAppSetting("HttpUri:Listen", "http://0.0.0.0:8028").Trim())
-				.Build()
-				.Run();
-		}
+		public static void Main(string[] args) => WebHost.CreateDefaultBuilder(args).Run<Startup>(args, 8028);
 
 		public Startup(IConfiguration configuration) => this.Configuration = configuration;
 
 		public IConfiguration Configuration { get; }
 
-		LogLevel LogLevel => this.Configuration.GetAppSetting("Logging/LogLevel/Default", "Information").ToEnum<LogLevel>();
+		LogLevel LogLevel => this.Configuration.GetAppSetting("Logging/LogLevel/Default", UtilityService.GetAppSetting("Logs:Level", "Information")).ToEnum<LogLevel>();
 
-		public void ConfigureServices(IServiceCollection services) => services.AddResponseCompression(options => options.EnableForHttps = true).AddLogging(builder => builder.SetMinimumLevel(this.LogLevel)).AddHttpContextAccessor();
+		public void ConfigureServices(IServiceCollection services)
+		{
+			services
+				.AddResponseCompression(options => options.EnableForHttps = true)
+				.AddLogging(builder => builder.SetMinimumLevel(this.LogLevel))
+				.AddHttpContextAccessor();
+		}
 
-		public void Configure(IApplicationBuilder app, IApplicationLifetime appLifetime, IHostingEnvironment environment)
+		public void Configure(IApplicationBuilder appBuilder, IApplicationLifetime appLifetime, IHostingEnvironment environment)
 		{
 			// settings
 			var stopwatch = Stopwatch.StartNew();
 			Global.ServiceName = "SRP";
 			Console.OutputEncoding = Encoding.UTF8;
 
-			var loggerFactory = app.ApplicationServices.GetService<ILoggerFactory>();
+			var loggerFactory = appBuilder.ApplicationServices.GetService<ILoggerFactory>();
 			var logPath = UtilityService.GetAppSetting("Path:Logs");
 			if (!string.IsNullOrWhiteSpace(logPath) && Directory.Exists(logPath))
 			{
@@ -70,14 +67,15 @@ namespace net.vieapps.Services.SRP
 
 			Global.Logger.LogInformation($"The {Global.ServiceName} HTTP service is starting");
 			Global.Logger.LogInformation($"Version: {typeof(Startup).Assembly.GetVersion()}");
-			Global.Logger.LogInformation($"Platform: {RuntimeInformation.FrameworkDescription} @ {(RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "Windows" : RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? "Linux" : "macOS")} {RuntimeInformation.OSArchitecture} ({(RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "Macintosh; Intel Mac OS X; " : "")}{RuntimeInformation.OSDescription.Trim()})");
 #if DEBUG
 			Global.Logger.LogInformation($"Working mode: DEBUG ({(environment.IsDevelopment() ? "Development" : "Production")})");
 #else
 			Global.Logger.LogInformation($"Working mode: RELEASE ({(environment.IsDevelopment() ? "Development" : "Production")})");
 #endif
+			Global.Logger.LogInformation($"Environment:\r\n\t- User: {Environment.UserName.ToLower()} @ {Environment.MachineName.ToLower()}\r\n\t- Platform: {RuntimeInformation.FrameworkDescription} @ {(RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "Windows" : RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? "Linux" : "macOS")} {RuntimeInformation.OSArchitecture} ({(RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "Macintosh; Intel Mac OS X; " : "")}{RuntimeInformation.OSDescription.Trim()})");
+			Global.Logger.LogInformation($"Service URIs:\r\n\t- Round robin: net.vieapps.services.{Global.ServiceName.ToLower()}.http\r\n\t- Single (unique): net.vieapps.services.{Extensions.GetUniqueName(Global.ServiceName + ".http")}");
 
-			Global.ServiceProvider = app.ApplicationServices;
+			Global.ServiceProvider = appBuilder.ApplicationServices;
 			Global.RootPath = environment.ContentRootPath;
 
 			JsonConvert.DefaultSettings = () => new JsonSerializerSettings
@@ -87,12 +85,12 @@ namespace net.vieapps.Services.SRP
 				DateTimeZoneHandling = DateTimeZoneHandling.Local
 			};
 
-			// reverse proxies
+			// setup middlewares
 			var forwardedHeadersOptions = new ForwardedHeadersOptions
 			{
 				ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
 			};
-			var knownProxies = UtilityService.GetAppSetting("ProxyIPs")?.ToList().Select(ip => IPAddress.Parse(ip)).ToList();
+			var knownProxies = UtilityService.GetAppSetting("ProxyIPs")?.ToList().Where(ip => IPAddress.TryParse(ip, out IPAddress address)).Select(ip => IPAddress.Parse(ip)).ToList();
 			if (knownProxies != null)
 			{
 				forwardedHeadersOptions.RequireHeaderSymmetry = false;
@@ -100,9 +98,11 @@ namespace net.vieapps.Services.SRP
 				knownProxies.ForEach(ip => forwardedHeadersOptions.KnownProxies.Add(ip));
 			}
 
-			// setup middlewares
-			app.UseForwardedHeaders(forwardedHeadersOptions).UseStatusCodeHandler();
-			app.UseResponseCompression().UseMiddleware<Handler>();
+			appBuilder
+				.UseForwardedHeaders(forwardedHeadersOptions)
+				.UseStatusCodeHandler()
+				.UseResponseCompression()
+				.UseMiddleware<Handler>();
 
 			// connect to WAMP router
 			Handler.OpenWAMPChannels();
@@ -110,12 +110,9 @@ namespace net.vieapps.Services.SRP
 			// on started
 			appLifetime.ApplicationStarted.Register(() =>
 			{
-				Global.Logger.LogInformation($"Listening URI: {UtilityService.GetAppSetting("HttpUri:Listen", "http://0.0.0.0:8028")}");
-				Global.Logger.LogInformation($"WAMP router URI: {WAMPConnections.GetRouterStrInfo()}");
-				Global.Logger.LogInformation($"Root path: {Global.RootPath}");
-				Global.Logger.LogInformation($"Default logging level: {this.LogLevel} [ASP.NET Core always set logging level by value of appsettings.json]");
-				Global.Logger.LogInformation($"Logging folder: {(logPath == null ? "None" : Path.GetDirectoryName(logPath))}");
-				Global.Logger.LogInformation($"Rolling log files is {(logPath == null ? "disabled" : $"enabled - Path format: {logPath}")}");
+				Global.Logger.LogInformation($"Root path (base directory): {Global.RootPath}");
+				Global.Logger.LogInformation($"WAMP router: {new Uri(WAMPConnections.GetRouterStrInfo()).GetResolvedURI()}");
+				Global.Logger.LogInformation($"Logging level: {this.LogLevel} - Rolling log files is {(string.IsNullOrWhiteSpace(logPath) ? "disabled" : $"enabled - Path format: {logPath}")}");
 				Global.Logger.LogInformation($"Static files path: {UtilityService.GetAppSetting("Path:StaticFiles", "None")}");
 				Global.Logger.LogInformation($"Static segments: {Global.StaticSegments.ToString(", ")}");
 				Global.Logger.LogInformation($"Show debugs: {Global.IsDebugLogEnabled} - Show results: {Global.IsDebugResultsEnabled} - Show stacks: {Global.IsDebugStacksEnabled}");
@@ -129,8 +126,7 @@ namespace net.vieapps.Services.SRP
 			appLifetime.ApplicationStopping.Register(() =>
 			{
 				Global.Logger = loggerFactory.CreateLogger<Startup>();
-				Global.InterCommunicateMessageUpdater?.Dispose();
-				WAMPConnections.CloseChannels();
+				Handler.CloseWAMPChannels();
 				Global.CancellationTokenSource.Cancel();
 			});
 
