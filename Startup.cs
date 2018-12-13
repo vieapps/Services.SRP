@@ -42,6 +42,7 @@ namespace net.vieapps.Services.SRP
 			services
 				.AddResponseCompression(options => options.EnableForHttps = true)
 				.AddLogging(builder => builder.SetMinimumLevel(this.LogLevel))
+				.AddCache(options => this.Configuration.GetSection("Cache").Bind(options))
 				.AddHttpContextAccessor();
 		}
 
@@ -100,6 +101,7 @@ namespace net.vieapps.Services.SRP
 
 			appBuilder
 				.UseForwardedHeaders(forwardedHeadersOptions)
+				.UseCache()
 				.UseStatusCodeHandler()
 				.UseResponseCompression()
 				.UseMiddleware<Handler>();

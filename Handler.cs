@@ -51,22 +51,29 @@ namespace net.vieapps.Services.SRP
 				if (config.Section.SelectNodes("map") is System.Xml.XmlNodeList maps)
 					maps.ToList().ForEach(map =>
 					{
-						var host = map.Attributes["host"]?.Value;
-						if (!string.IsNullOrWhiteSpace(host))
+						var hostname = map.Attributes["host"]?.Value;
+						if (!string.IsNullOrWhiteSpace(hostname))
 						{
-							var folder = map.Attributes["folder"]?.Value;
-							if (!string.IsNullOrWhiteSpace(folder))
+							var directory = map.Attributes["directory"]?.Value;
+							if (!string.IsNullOrWhiteSpace(directory))
 							{
-								if (folder.IndexOf(Path.DirectorySeparatorChar) < 0)
-									folder = Path.Combine(this.DefaultDirectory, folder);
-								this.Maps[host.Trim().ToLower()] = new Map
+								if (directory.IndexOf(Path.DirectorySeparatorChar) < 0)
+									directory = Path.Combine(this.DefaultDirectory, directory);
+								directory = Directory.Exists(directory) ? directory : Path.Combine(this.DefaultDirectory, directory);
+								var notFound = map.Attributes["notFound"]?.Value;
+								var redirectToNoneWWW = map.Attributes["redirectToNoneWWW"]?.Value != null ? "true".IsEquals(map.Attributes["redirectToNoneWWW"]?.Value) : this.RedirectToNoneWWW;
+								var redirectToHTTPS = map.Attributes["redirectToHTTPS"]?.Value != null ? "true".IsEquals(map.Attributes["redirectToHTTPS"]?.Value) : this.RedirectToHTTPS;
+								hostname.Trim().ToLower().ToArray("|", true).ForEach(host =>
 								{
-									Host = host.Trim().ToLower(),
-									Folder = Directory.Exists(folder) ? folder : Path.Combine(this.DefaultDirectory, folder),
-									NotFound = map.Attributes["notFound"]?.Value,
-									RedirectToNoneWWW = map.Attributes["redirectToNoneWWW"]?.Value != null ? "true".IsEquals(map.Attributes["redirectToNoneWWW"]?.Value) : this.RedirectToNoneWWW,
-									RedirectToHTTPS = map.Attributes["redirectToHTTPS"]?.Value != null ? "true".IsEquals(map.Attributes["redirectToHTTPS"]?.Value) : this.RedirectToHTTPS
-								};
+									this.Maps[host] = new Map
+									{
+										Host = host,
+										Directory = directory,
+										NotFound = notFound,
+										RedirectToNoneWWW = redirectToNoneWWW,
+										RedirectToHTTPS = redirectToHTTPS
+									};
+								});
 							}
 						}
 					});
@@ -76,7 +83,7 @@ namespace net.vieapps.Services.SRP
 				$"=> Redirect to HTTPs: {this.RedirectToHTTPS}" + "\r\n" +
 				$"=> Default directory: {this.DefaultDirectory}" + "\r\n" +
 				$"=> Default file: {this.DefaultFile}" + "\r\n" +
-				$"=> Maps: {(this.Maps.Count < 1 ? "None" : $"\r\n\t+ {string.Join("\r\n\t+ ", this.Maps.Select(m => $"{m.Key} => {m.Value.Folder + $" ({m.Value.RedirectToNoneWWW}/{m.Value.RedirectToHTTPS}/{m.Value.NotFound ?? "None"})"}"))}")}"
+				$"=> Maps: {(this.Maps.Count < 1 ? "None" : $"\r\n\t+ {string.Join("\r\n\t+ ", this.Maps.Select(m => $"{m.Key} => {m.Value.Directory + $" ({m.Value.RedirectToNoneWWW}/{m.Value.RedirectToHTTPS}/{m.Value.NotFound ?? "None"})"}"))}")}"
 			);
 		}
 
@@ -110,8 +117,9 @@ namespace net.vieapps.Services.SRP
 			//  prepare
 			context.Items["PipelineStopwatch"] = Stopwatch.StartNew();
 			var requestUri = context.GetRequestUri();
-			if (Global.IsDebugLogEnabled)
-				await context.WriteLogsAsync("SRP", $"Begin request {requestUri}");
+
+			if (Global.IsVisitLogEnabled)
+				await context.WriteLogsAsync(Global.Logger, "Visits", $"Request starting {context.Request.Method} => {requestUri} (IP: {context.Connection.RemoteIpAddress} - Agent: {context.Request.Headers["User-Agent"]}{(string.IsNullOrWhiteSpace(context.Request.Headers["Referrer"]) ? "" : $" - Origin: {context.Request.Headers["Origin"]}")}{(string.IsNullOrWhiteSpace(context.Request.Headers["Referrer"]) ? "" : $" - Refer: {context.Request.Headers["Referrer"]}")})").ConfigureAwait(false);
 
 			// request of static files
 			if (Global.StaticSegments.Contains(requestUri.GetRequestPathSegments().First()))
@@ -134,6 +142,9 @@ namespace net.vieapps.Services.SRP
 					await context.WriteLogsAsync("SRP", $"Failure response [{requestUri}]", ex).ConfigureAwait(false);
 					context.ShowHttpError(ex.GetHttpStatusCode(), ex.Message, ex.GetType().GetTypeName(true), context.GetCorrelationID(), ex, Global.IsDebugLogEnabled);
 				}
+
+			if (Global.IsVisitLogEnabled)
+				await context.WriteLogsAsync(Global.Logger, "Visits", $"Request finished in {context.GetExecutionTimes()}").ConfigureAwait(false);
 		}
 
 		bool GetMap(string host, out Map mapInfo)
@@ -165,7 +176,7 @@ namespace net.vieapps.Services.SRP
 
 			// prepare file info
 			FileInfo fileInfo = null;
-			var filePath = $"{mapInfo?.Folder ?? this.DefaultDirectory}/{string.Join("/", requestUri.GetRequestPathSegments())}".Replace(@"\", "/").Replace("//", "/").Replace('/', Path.DirectorySeparatorChar);
+			var filePath = $"{mapInfo?.Directory ?? this.DefaultDirectory}/{string.Join("/", requestUri.GetRequestPathSegments())}".Replace(@"\", "/").Replace("//", "/").Replace('/', Path.DirectorySeparatorChar);
 			filePath += filePath.EndsWith(Path.DirectorySeparatorChar) ? this.DefaultFile : "";
 
 			// check to reduce traffic
@@ -197,7 +208,7 @@ namespace net.vieapps.Services.SRP
 			// check existed
 			fileInfo = fileInfo ?? new FileInfo(filePath);
 			if (!fileInfo.Exists && !string.IsNullOrWhiteSpace(mapInfo?.NotFound))
-				fileInfo = new FileInfo(Path.Combine(Path.IsPathRooted(mapInfo.Folder) ? mapInfo.Folder : Path.Combine(this.DefaultDirectory, mapInfo.Folder), mapInfo.NotFound));
+				fileInfo = new FileInfo(Path.Combine(Path.IsPathRooted(mapInfo.Directory) ? mapInfo.Directory : Path.Combine(this.DefaultDirectory, mapInfo.Directory), mapInfo.NotFound));
 			if (!fileInfo.Exists)
 				throw new FileNotFoundException($"Not Found [{requestUri}]");
 
@@ -252,6 +263,8 @@ namespace net.vieapps.Services.SRP
 								Global.InitializeRTUServiceAsync()
 							).ConfigureAwait(false);
 							Global.Logger.LogInformation("Helper services are succesfully initialized");
+							while (WAMPConnections.IncomingChannel == null || WAMPConnections.OutgoingChannel == null)
+								await Task.Delay(UtilityService.GetRandomNumber(234, 567), Global.CancellationTokenSource.Token).ConfigureAwait(false);
 						}
 						catch (Exception ex)
 						{
@@ -280,9 +293,9 @@ namespace net.vieapps.Services.SRP
 	public class Map
 	{
 		public string Host { get; internal set; } = "";
-		public string Folder { get; internal set; } = "";
+		public string Directory { get; internal set; } = "";
+		public string NotFound { get; internal set; } = null;
 		public bool RedirectToNoneWWW { get; internal set; } = false;
 		public bool RedirectToHTTPS { get; internal set; } = false;
-		public string NotFound { get; internal set; } = null;
 	}
 }
