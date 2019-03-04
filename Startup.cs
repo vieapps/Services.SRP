@@ -48,10 +48,18 @@ namespace net.vieapps.Services.SRP
 
 		public void Configure(IApplicationBuilder appBuilder, IApplicationLifetime appLifetime, IHostingEnvironment environment)
 		{
-			// settings
+			// environments
 			var stopwatch = Stopwatch.StartNew();
-			Global.ServiceName = "SRP";
 			Console.OutputEncoding = Encoding.UTF8;
+			Global.ServiceName = "SRP";
+			AspNetCoreUtilityService.ServerName = UtilityService.GetAppSetting("HttpServerName", "VIEApps NGX");
+
+			JsonConvert.DefaultSettings = () => new JsonSerializerSettings
+			{
+				Formatting = Formatting.None,
+				ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
+				DateTimeZoneHandling = DateTimeZoneHandling.Local
+			};
 
 			var loggerFactory = appBuilder.ApplicationServices.GetService<ILoggerFactory>();
 			var logPath = UtilityService.GetAppSetting("Path:Logs");
@@ -63,8 +71,12 @@ namespace net.vieapps.Services.SRP
 			else
 				logPath = null;
 
+			// setup the service
 			Logger.AssignLoggerFactory(loggerFactory);
 			Global.Logger = loggerFactory.CreateLogger<Startup>();
+
+			Global.ServiceProvider = appBuilder.ApplicationServices;
+			Global.RootPath = environment.ContentRootPath;
 
 			Global.Logger.LogInformation($"The {Global.ServiceName} HTTP service is starting");
 			Global.Logger.LogInformation($"Version: {typeof(Startup).Assembly.GetVersion()}");
@@ -76,31 +88,9 @@ namespace net.vieapps.Services.SRP
 			Global.Logger.LogInformation($"Environment:\r\n\t- User: {Environment.UserName.ToLower()} @ {Environment.MachineName.ToLower()}\r\n\t- Platform: {RuntimeInformation.FrameworkDescription} @ {(RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "Windows" : RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? "Linux" : "macOS")} {RuntimeInformation.OSArchitecture} ({(RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "Macintosh; Intel Mac OS X; " : "")}{RuntimeInformation.OSDescription.Trim()})");
 			Global.Logger.LogInformation($"Service URIs:\r\n\t- Round robin: net.vieapps.services.{Global.ServiceName.ToLower()}.http\r\n\t- Single (unique): net.vieapps.services.{Extensions.GetUniqueName(Global.ServiceName + ".http")}");
 
-			Global.ServiceProvider = appBuilder.ApplicationServices;
-			Global.RootPath = environment.ContentRootPath;
-
-			JsonConvert.DefaultSettings = () => new JsonSerializerSettings
-			{
-				Formatting = Formatting.None,
-				ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
-				DateTimeZoneHandling = DateTimeZoneHandling.Local
-			};
-
 			// setup middlewares
-			var forwardedHeadersOptions = new ForwardedHeadersOptions
-			{
-				ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
-			};
-			var knownProxies = UtilityService.GetAppSetting("ProxyIPs")?.ToList().Where(ip => IPAddress.TryParse(ip, out IPAddress address)).Select(ip => IPAddress.Parse(ip)).ToList();
-			if (knownProxies != null)
-			{
-				forwardedHeadersOptions.RequireHeaderSymmetry = false;
-				forwardedHeadersOptions.ForwardLimit = null;
-				knownProxies.ForEach(ip => forwardedHeadersOptions.KnownProxies.Add(ip));
-			}
-
 			appBuilder
-				.UseForwardedHeaders(forwardedHeadersOptions)
+				.UseForwardedHeaders(Global.GetForwardedHeadersOptions())
 				.UseCache()
 				.UseStatusCodeHandler()
 				.UseResponseCompression()
@@ -114,7 +104,7 @@ namespace net.vieapps.Services.SRP
 			{
 				Global.Logger.LogInformation($"Root path (base directory): {Global.RootPath}");
 				Global.Logger.LogInformation($"WAMP router: {new Uri(WAMPConnections.GetRouterStrInfo()).GetResolvedURI()}");
-				Global.Logger.LogInformation($"Logging level: {this.LogLevel} - Rolling log files is {(string.IsNullOrWhiteSpace(logPath) ? "disabled" : $"enabled - Path format: {logPath}")}");
+				Global.Logger.LogInformation($"Logging level: {this.LogLevel} - Rolling log files is {(string.IsNullOrWhiteSpace(logPath) ? "disabled" : $"enabled => {logPath}")}");
 				Global.Logger.LogInformation($"Static files path: {UtilityService.GetAppSetting("Path:StaticFiles", "None")}");
 				Global.Logger.LogInformation($"Static segments: {Global.StaticSegments.ToString(", ")}");
 				Global.Logger.LogInformation($"Show debugs: {Global.IsDebugLogEnabled} - Show results: {Global.IsDebugResultsEnabled} - Show stacks: {Global.IsDebugStacksEnabled}");
