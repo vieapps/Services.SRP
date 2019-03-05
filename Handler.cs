@@ -33,9 +33,9 @@ namespace net.vieapps.Services.SRP
 		bool RedirectToHTTPS { get; set; } = false;
 		string DefaultDirectory { get; set; } = "apps";
 		string DefaultFile { get; set; } = "index.html";
-		Dictionary<string, Map> RedirectMaps { get; } = new Dictionary<string, Map>(StringComparer.OrdinalIgnoreCase);
-		Dictionary<string, Map> ForwardMaps { get; } = new Dictionary<string, Map>(StringComparer.OrdinalIgnoreCase);
-		Dictionary<string, Map> DirectoryMaps { get; } = new Dictionary<string, Map>(StringComparer.OrdinalIgnoreCase);
+		internal static Dictionary<string, Map> RedirectMaps { get; } = new Dictionary<string, Map>(StringComparer.OrdinalIgnoreCase);
+		internal static Dictionary<string, Map> ForwardMaps { get; } = new Dictionary<string, Map>(StringComparer.OrdinalIgnoreCase);
+		internal static Dictionary<string, Map> StaticMaps { get; } = new Dictionary<string, Map>(StringComparer.OrdinalIgnoreCase);
 
 		public Handler(RequestDelegate next)
 		{
@@ -75,7 +75,7 @@ namespace net.vieapps.Services.SRP
 									location = location.Left(location.Length - 1);
 								if (!location.IsStartsWith("http://") && !location.IsStartsWith("https://"))
 									location = "https://" + location;
-								map.Host.Trim().ToLower().ToArray("|", true).ForEach(host => this.RedirectMaps[host] = map.Clone(m =>
+								map.Host.Trim().ToLower().ToArray("|", true).ForEach(host => Handler.RedirectMaps[host] = map.Clone(m =>
 								{
 									m.Host = host;
 									m.RedirectTo = location;
@@ -88,7 +88,7 @@ namespace net.vieapps.Services.SRP
 									location = location.Left(location.Length - 1);
 								if (!location.IsStartsWith("http://") && !location.IsStartsWith("https://"))
 									location = "https://" + location;
-								map.Host.Trim().ToLower().ToArray("|", true).ForEach(host => this.ForwardMaps[host] = map.Clone(m =>
+								map.Host.Trim().ToLower().ToArray("|", true).ForEach(host => Handler.ForwardMaps[host] = map.Clone(m =>
 								{
 									m.Host = host;
 									m.ForwardTo = location;
@@ -100,7 +100,7 @@ namespace net.vieapps.Services.SRP
 								if (directory.IndexOf(Path.DirectorySeparatorChar) < 0)
 									directory = Path.Combine(this.DefaultDirectory, directory);
 								directory = Directory.Exists(directory) ? directory : Path.Combine(this.DefaultDirectory, directory);
-								map.Host.Trim().ToLower().ToArray("|", true).ForEach(host => this.DirectoryMaps[host] = map.Clone(m =>
+								map.Host.Trim().ToLower().ToArray("|", true).ForEach(host => Handler.StaticMaps[host] = map.Clone(m =>
 								{
 									m.Host = host;
 									m.Directory = directory;
@@ -113,9 +113,9 @@ namespace net.vieapps.Services.SRP
 				$"=> Redirect to HTTPs: {this.RedirectToHTTPS}" + "\r\n" +
 				$"=> Default directory: {this.DefaultDirectory}" + "\r\n" +
 				$"=> Default file: {this.DefaultFile}" + "\r\n" +
-				$"=> Redirect maps: {(this.RedirectMaps.Count < 1 ? "None" : $"\r\n\t+ {string.Join("\r\n\t+ ", this.RedirectMaps.Select(m => $"{m.Key} => {m.Value.RedirectTo}"))}")}" + "\r\n" +
-				$"=> Forward maps: {(this.ForwardMaps.Count < 1 ? "None" : $"\r\n\t+ {string.Join("\r\n\t+ ", this.ForwardMaps.Select(m => $"{m.Key} => {m.Value.ForwardTo + $" ({m.Value.ForwardTokenName ?? "None"}/{m.Value.ForwardTokenValue ?? "None"})"}"))}")}" + "\r\n" +
-				$"=> Directory maps: {(this.DirectoryMaps.Count < 1 ? "None" : $"\r\n\t+ {string.Join("\r\n\t+ ", this.DirectoryMaps.Select(m => $"{m.Key} => {m.Value.Directory + $" ({m.Value.RedirectToNoneWWW}/{m.Value.RedirectToHTTPS}/{m.Value.NotFound ?? "None"})"}"))}")}"
+				$"=> Redirect maps: {(Handler.RedirectMaps.Count < 1 ? "None" : $"\r\n\t+ {string.Join("\r\n\t+ ", Handler.RedirectMaps.Select(m => $"{m.Key} => {m.Value.RedirectTo}"))}")}" + "\r\n" +
+				$"=> Forward maps: {(Handler.ForwardMaps.Count < 1 ? "None" : $"\r\n\t+ {string.Join("\r\n\t+ ", Handler.ForwardMaps.Select(m => $"{m.Key} => {m.Value.ForwardTo + $" ({m.Value.ForwardTokenName ?? "None"}/{m.Value.ForwardTokenValue ?? "None"})"}"))}")}" + "\r\n" +
+				$"=> Static maps: {(Handler.StaticMaps.Count < 1 ? "None" : $"\r\n\t+ {string.Join("\r\n\t+ ", Handler.StaticMaps.Select(m => $"{m.Key} => {m.Value.Directory + $" ({m.Value.RedirectToNoneWWW}/{m.Value.RedirectToHTTPS}/{m.Value.NotFound ?? "None"})"}"))}")}"
 			);
 		}
 
@@ -125,10 +125,38 @@ namespace net.vieapps.Services.SRP
 			if (context.Request.Path.Value.IsEquals("/load-balancing-health-check"))
 				await context.WriteAsync("OK", "text/plain", null, 0, null, TimeSpan.Zero, null, Global.CancellationTokenSource.Token).ConfigureAwait(false);
 
+			// maps
+			else if (context.Request.Path.Value.IsEquals("/_maps"))
+			{
+				var maps = Handler.RedirectMaps.Values.Select(map => map.ToJson())
+					.Concat(Handler.ForwardMaps.Values.Select(map => map.ToJson()))
+					.Concat(Handler.StaticMaps.Values.Select(map => map.ToJson()))
+					.ToJArray();
+				var token = context.GetQueryParameter("token");
+				if (string.IsNullOrWhiteSpace(token) || !token.IsEquals(UtilityService.GetAppSetting("SRP:Token")))
+					maps.ForEach(map => map["RedirectTo"] = map["ForwardTo"] = map["ForwardTokenName"] = map["ForwardTokenValue"] = map["Directory"] = "*****");
+				await context.WriteAsync(maps, Global.CancellationTokenSource.Token).ConfigureAwait(false);
+			}
+
+			// other requests
 			else
 			{
 				// process the request
-				await this.ProcessRequestAsync(context).ConfigureAwait(false);
+				try
+				{
+					var requestUri = context.GetRequestUri();
+					if (this.GetMap(requestUri.Host, Handler.RedirectMaps, out Map map))
+						context.Redirect($"{new Uri(map.RedirectTo + requestUri.PathAndQuery)}", true);
+					else if (this.GetMap(requestUri.Host, Handler.ForwardMaps, out map))
+						await this.ProcessForwardRequestAsync(context).ConfigureAwait(false);
+					else
+						await this.ProcessStaticRequestAsync(context).ConfigureAwait(false);
+				}
+				catch (Exception ex)
+				{
+					await context.WriteLogsAsync("SRP", $"Error occurred while processing [{context.GetRequestUri()}] => {ex.Message}", ex).ConfigureAwait(false);
+					context.ShowHttpError(ex.GetHttpStatusCode(), ex.Message, ex.GetType().GetTypeName(true), context.GetCorrelationID(), ex, Global.IsDebugLogEnabled);
+				}
 
 				// invoke next middleware
 				try
@@ -143,7 +171,6 @@ namespace net.vieapps.Services.SRP
 			}
 		}
 
-		#region Process request
 		bool GetMap(string host, Dictionary<string, Map> maps, out Map map)
 		   => maps.TryGetValue(host, out map)
 			   ? true
@@ -151,23 +178,17 @@ namespace net.vieapps.Services.SRP
 				   ? maps.TryGetValue(host.Right(host.Length - 4), out map)
 				   : false;
 
-		Task ProcessRequestAsync(HttpContext context)
+		#region Process forwarding requests
+		async Task ProcessForwardRequestAsync(HttpContext context)
 		{
 			var requestUri = context.GetRequestUri();
-			if (this.GetMap(requestUri.Host, this.RedirectMaps, out Map map))
-			{
-				context.RedirectPermanently($"{new Uri(map.RedirectTo + requestUri.PathAndQuery)}");
-				return Task.CompletedTask;
-			}
-			else if (this.GetMap(requestUri.Host, this.ForwardMaps, out map))
-			{
-				return context.WriteAsync($"Forward to => {new Uri(map.ForwardTo + requestUri.PathAndQuery + (requestUri.PathAndQuery.IndexOf("?") > -1 ? "&" : "?") + map.ForwardTokenName + "=" + map.ForwardTokenValue.UrlEncode())}", Global.CancellationTokenSource.Token);
-			}
-			else
-				return this.ProcessDirectoryRequestAsync(context);
+			this.GetMap(requestUri.Host, Handler.ForwardMaps, out Map map);
+			await context.WriteAsync($"Forward to => {new Uri(map.ForwardTo + requestUri.PathAndQuery + (requestUri.PathAndQuery.IndexOf("?") > -1 ? "&" : "?") + map.ForwardTokenName + "=" + map.ForwardTokenValue.UrlEncode())}", Global.CancellationTokenSource.Token).ConfigureAwait(false);
 		}
+		#endregion
 
-		async Task ProcessDirectoryRequestAsync(HttpContext context)
+		#region Process static file requests
+		async Task ProcessStaticRequestAsync(HttpContext context)
 		{
 			//  prepare
 			context.Items["PipelineStopwatch"] = Stopwatch.StartNew();
@@ -205,7 +226,7 @@ namespace net.vieapps.Services.SRP
 		{
 			// prepare
 			var requestUri = context.GetRequestUri();
-			this.GetMap(requestUri.Host, this.DirectoryMaps, out Map map);
+			this.GetMap(requestUri.Host, Handler.StaticMaps, out Map map);
 
 			// redirect
 			var redirectToHttps = (map != null ? map.RedirectToHTTPS : this.RedirectToHTTPS) && !requestUri.Scheme.IsEquals("https");
@@ -324,6 +345,33 @@ namespace net.vieapps.Services.SRP
 						}
 					})
 					.ContinueWith(async task => await Global.RegisterServiceAsync().ConfigureAwait(false), TaskContinuationOptions.OnlyOnRanToCompletion)
+					.ContinueWith(async task => await Task.WhenAll(Handler.RedirectMaps
+						.Select(kvp => new CommunicateMessage
+						{
+							ServiceName = Global.ServiceName,
+							Type = "Update",
+							Data = new JObject
+							{
+								{ "Type", "Redirect" },
+								{ "Map", kvp.Value.ToJson() }
+							}
+						})
+						.Select(message => message.PublishInterCommunicateMessageAsync(Global.Logger))
+						.Concat(Handler.ForwardMaps
+							.Select(kvp => new CommunicateMessage
+							{
+								ServiceName = Global.ServiceName,
+								Type = "Update",
+								Data = new JObject
+								{
+									{ "Type", "Forward" },
+									{ "Map", kvp.Value.ToJson() }
+								}
+							})
+							.Select(message => message.PublishInterCommunicateMessageAsync(Global.Logger))
+						)
+						.ToList()
+					), TaskContinuationOptions.OnlyOnRanToCompletion)
 					.ConfigureAwait(false);
 				},
 				waitingTimes
@@ -337,7 +385,23 @@ namespace net.vieapps.Services.SRP
 			WAMPConnections.CloseChannels();
 		}
 
-		static Task ProcessInterCommunicateMessageAsync(CommunicateMessage message) => Task.CompletedTask;
+		async static Task ProcessInterCommunicateMessageAsync(CommunicateMessage message)
+		{
+			if ("Update".IsEquals(message.Type))
+			{
+				var map = message.Data["Map"]?.Copy<Map>();
+				var type = (message.Data["Type"] as JValue)?.ToString();
+				if (map != null && !string.IsNullOrWhiteSpace(type))
+				{
+					if ("Redirect".IsEquals(type))
+						Handler.RedirectMaps[map.Host] = map;
+					else if ("Forward".IsEquals(type))
+						Handler.ForwardMaps[map.Host] = map;
+					if (Global.IsDebugLogEnabled)
+						await Global.WriteLogsAsync(Global.Logger, "RTU", $"Update map successful => {map.ToJson()}", null).ConfigureAwait(false);
+				}
+			}
+		}
 		#endregion
 
 	}
