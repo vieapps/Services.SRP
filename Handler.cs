@@ -349,24 +349,16 @@ namespace net.vieapps.Services.SRP
 						.Select(kvp => new CommunicateMessage
 						{
 							ServiceName = Global.ServiceName,
-							Type = "Update",
-							Data = new JObject
-							{
-								{ "Type", "Redirect" },
-								{ "Map", kvp.Value.ToJson() }
-							}
+							Type = "Update#Redirect",
+							Data = kvp.Value.ToJson()
 						})
 						.Select(message => message.PublishInterCommunicateMessageAsync(Global.Logger))
 						.Concat(Handler.ForwardMaps
 							.Select(kvp => new CommunicateMessage
 							{
 								ServiceName = Global.ServiceName,
-								Type = "Update",
-								Data = new JObject
-								{
-									{ "Type", "Forward" },
-									{ "Map", kvp.Value.ToJson() }
-								}
+								Type = "Update#Forward",
+								Data = kvp.Value.ToJson()
 							})
 							.Select(message => message.PublishInterCommunicateMessageAsync(Global.Logger))
 						)
@@ -387,18 +379,24 @@ namespace net.vieapps.Services.SRP
 
 		async static Task ProcessInterCommunicateMessageAsync(CommunicateMessage message)
 		{
-			if ("Update".IsEquals(message.Type))
+			if ("Update#Redirect".IsEquals(message.Type))
 			{
-				var map = message.Data["Map"]?.Copy<Map>();
-				var type = (message.Data["Type"] as JValue)?.ToString();
-				if (map != null && !string.IsNullOrWhiteSpace(type))
+				var map = message.Data?.Copy<Map>();
+				if (map != null)
 				{
-					if ("Redirect".IsEquals(type))
-						Handler.RedirectMaps[map.Host] = map;
-					else if ("Forward".IsEquals(type))
-						Handler.ForwardMaps[map.Host] = map;
+					Handler.RedirectMaps[map.Host] = map;
 					if (Global.IsDebugLogEnabled)
-						await Global.WriteLogsAsync(Global.Logger, "RTU", $"Update map successful => {map.ToJson()}", null).ConfigureAwait(false);
+						await Global.WriteLogsAsync(Global.Logger, "RTU", $"Update redirect map successful => {map.ToJson()}", null).ConfigureAwait(false);
+				}
+			}
+			else if ("Update#Forward".IsEquals(message.Type))
+			{
+				var map = message.Data?.Copy<Map>();
+				if (map != null)
+				{
+					Handler.ForwardMaps[map.Host] = map;
+					if (Global.IsDebugLogEnabled)
+						await Global.WriteLogsAsync(Global.Logger, "RTU", $"Update forward map successful => {map.ToJson()}", null).ConfigureAwait(false);
 				}
 			}
 		}
