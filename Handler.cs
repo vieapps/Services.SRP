@@ -128,14 +128,20 @@ namespace net.vieapps.Services.SRP
 			// maps
 			else if (context.Request.Path.Value.IsEquals("/_maps"))
 			{
-				var maps = Handler.RedirectMaps.Values.Select(map => map.ToJson())
-					.Concat(Handler.ForwardMaps.Values.Select(map => map.ToJson()))
-					.Concat(Handler.StaticMaps.Values.Select(map => map.ToJson()))
-					.ToJArray();
-				var token = context.GetQueryParameter("token");
-				if (string.IsNullOrWhiteSpace(token) || !token.IsEquals(UtilityService.GetAppSetting("SRP:Token")))
-					maps.ForEach(map => map["RedirectTo"] = map["ForwardTo"] = map["ForwardTokenName"] = map["ForwardTokenValue"] = map["Directory"] = "*****");
-				await context.WriteAsync(maps, Global.CancellationTokenSource.Token).ConfigureAwait(false);
+				var isAllowed = "true".IsEquals(UtilityService.GetAppSetting("SRP:AllowMaps", "true"));
+				if (isAllowed)
+				{
+					var maps = Handler.RedirectMaps.Values.Select(map => map.ToJson())
+						.Concat(Handler.ForwardMaps.Values.Select(map => map.ToJson()))
+						.Concat(Handler.StaticMaps.Values.Select(map => map.ToJson()))
+						.ToJArray();
+					var token = context.GetQueryParameter("token");
+					if (string.IsNullOrWhiteSpace(token) || !token.IsEquals(UtilityService.GetAppSetting("SRP:Token")))
+						maps.ForEach(map => map["RedirectTo"] = map["ForwardTo"] = map["ForwardTokenName"] = map["ForwardTokenValue"] = map["Directory"] = "*****");
+					await context.WriteAsync(maps, Global.CancellationTokenSource.Token).ConfigureAwait(false);
+				}
+				else
+					context.ShowHttpError(404, $"Not Found [{context.GetUri()}]", "FileNotFoundException", context.GetCorrelationID());
 			}
 
 			// other requests
@@ -154,7 +160,7 @@ namespace net.vieapps.Services.SRP
 				}
 				catch (Exception ex)
 				{
-					await context.WriteLogsAsync("SRP", $"Error occurred while processing [{context.GetRequestUri()}] => {ex.Message}", ex).ConfigureAwait(false);
+					await context.WriteLogsAsync("Http.Handlers", $"Error occurred while processing [{context.GetRequestUri()}] => {ex.Message}", ex).ConfigureAwait(false);
 					context.ShowHttpError(ex.GetHttpStatusCode(), ex.Message, ex.GetType().GetTypeName(true), context.GetCorrelationID(), ex, Global.IsDebugLogEnabled);
 				}
 
@@ -193,6 +199,14 @@ namespace net.vieapps.Services.SRP
 			//  prepare
 			context.Items["PipelineStopwatch"] = Stopwatch.StartNew();
 			var requestUri = context.GetRequestUri();
+
+			// request to favicon.ico file
+			if (requestUri.GetRequestPathSegments(true).First().Equals("favicon.ico"))
+			{
+				await context.ProcessFavouritesIconFileRequestAsync().ConfigureAwait(false);
+				return;
+			}
+
 			if (Global.IsVisitLogEnabled)
 				await context.WriteVisitStartingLogAsync().ConfigureAwait(false);
 
@@ -210,11 +224,11 @@ namespace net.vieapps.Services.SRP
 				{
 					var fileInfo = await this.ProcessFileRequestAsync(context).ConfigureAwait(false);
 					if (fileInfo != null && Global.IsDebugLogEnabled)
-						await context.WriteLogsAsync("SRP", $"Success response ({fileInfo.FullName} - {fileInfo.Length:#,##0} bytes)").ConfigureAwait(false);
+						await context.WriteLogsAsync("Http.Handlers", $"Success response ({fileInfo.FullName} - {fileInfo.Length:#,##0} bytes)").ConfigureAwait(false);
 				}
 				catch (Exception ex)
 				{
-					await context.WriteLogsAsync("SRP", $"Failure response [{requestUri}]", ex).ConfigureAwait(false);
+					await context.WriteLogsAsync("Http.Handlers", $"Failure response [{requestUri}]", ex).ConfigureAwait(false);
 					context.ShowHttpError(ex.GetHttpStatusCode(), ex.Message, ex.GetType().GetTypeName(true), context.GetCorrelationID(), ex, Global.IsDebugLogEnabled);
 				}
 
@@ -237,7 +251,7 @@ namespace net.vieapps.Services.SRP
 				url = redirectToHttps ? url.Replace("http://", "https://") : url;
 				url = redirectToNoneWWW ? url.Replace("://www.", "://") : url;
 				if (Global.IsDebugLogEnabled)
-					await context.WriteLogsAsync("SRP", $"Redirect: {requestUri} => {url}");
+					await context.WriteLogsAsync("Http.Handlers", $"Redirect: {requestUri} => {url}");
 				context.Redirect(url);
 				return null;
 			}
@@ -268,7 +282,7 @@ namespace net.vieapps.Services.SRP
 				{
 					context.SetResponseHeaders((int)HttpStatusCode.NotModified, eTag, lastModifed, "public", context.GetCorrelationID());
 					if (Global.IsDebugLogEnabled)
-						await context.WriteLogsAsync("SRP", $"Success response with status code 304 to reduce traffic ({filePath})").ConfigureAwait(false);
+						await context.WriteLogsAsync("Http.Handlers", $"Success response with status code 304 to reduce traffic ({filePath})").ConfigureAwait(false);
 					return fileInfo;
 				}
 			}
@@ -281,20 +295,15 @@ namespace net.vieapps.Services.SRP
 			if (!fileInfo.Exists)
 			{
 				if (Global.IsDebugLogEnabled)
-					await context.WriteLogsAsync("SRP", $"Requested file is not found [{requestUri}] => [{fileInfo.FullName}]").ConfigureAwait(false);
+					await context.WriteLogsAsync("Http.Handlers", $"Requested file is not found [{requestUri}] => [{fileInfo.FullName}]").ConfigureAwait(false);
 				throw new FileNotFoundException($"Not Found [{requestUri}]");
 			}
 
-			// prepare body
-			var fileMimeType = fileInfo.GetMimeType();
-			var fileContent = fileMimeType.IsEndsWith("json")
-				? JObject.Parse(await UtilityService.ReadTextFileAsync(fileInfo, null, Global.CancellationTokenSource.Token).ConfigureAwait(false)).ToString(Formatting.Indented).ToBytes()
-				: await UtilityService.ReadBinaryFileAsync(fileInfo, Global.CancellationTokenSource.Token).ConfigureAwait(false);
-
 			// response
+			var fileContent = await Global.GetStaticFileContentAsync(fileInfo).ConfigureAwait(false);
 			context.SetResponseHeaders((int)HttpStatusCode.OK, new Dictionary<string, string>
 			{
-				{ "Content-Type", $"{fileMimeType}; charset=utf-8" },
+				{ "Content-Type", $"{fileInfo.GetMimeType()}; charset=utf-8" },
 				{ "ETag", eTag },
 				{ "Last-Modified", $"{fileInfo.LastWriteTime.ToHttpString()}" },
 				{ "Cache-Control", "public" },
@@ -311,21 +320,65 @@ namespace net.vieapps.Services.SRP
 		{
 			Global.Logger.LogDebug($"Attempting to connect to WAMP router [{new Uri(WAMPConnections.GetRouterStrInfo()).GetResolvedURI()}]");
 			Global.OpenWAMPChannels(
-				(sender, args) =>
+				(sender, arguments) =>
 				{
-					Global.Logger.LogDebug($"Incoming channel to WAMP router is established - Session ID: {args.SessionId}");
+					Global.Logger.LogDebug($"Incoming channel to WAMP router is established - Session ID: {arguments.SessionId}");
 					WAMPConnections.IncomingChannel.Update(WAMPConnections.IncomingChannelSessionID, Global.ServiceName, $"Incoming ({Global.ServiceName} HTTP service)");
-					Global.InterCommunicateMessageUpdater?.Dispose();
-					Global.InterCommunicateMessageUpdater = WAMPConnections.IncomingChannel.RealmProxy.Services
+					Global.PrimaryInterCommunicateMessageUpdater?.Dispose();
+					Global.PrimaryInterCommunicateMessageUpdater = WAMPConnections.IncomingChannel.RealmProxy.Services
 						.GetSubject<CommunicateMessage>("net.vieapps.rtu.communicate.messages.srp")
 						.Subscribe(
-							async message => await Handler.ProcessInterCommunicateMessageAsync(message).ConfigureAwait(false),
-							async exception => await Global.WriteLogsAsync(Global.Logger, "RTU", $"{exception.Message}", exception).ConfigureAwait(false)
+							async message =>
+							{
+								var correlationID = UtilityService.NewUUID;
+								try
+								{
+									await Handler.ProcessInterCommunicateMessageAsync(message).ConfigureAwait(false);
+									if (Global.IsDebugResultsEnabled)
+										await Global.WriteLogsAsync(Global.Logger, "Http.Handlers", 
+											$"Successfully process an inter-communicate message" + "\r\n" +
+											$"- Type: {message?.Type}" + "\r\n" +
+											$"- Message: {message?.Data?.ToString(Global.IsDebugLogEnabled ? Formatting.Indented : Formatting.None)}"
+										, null, Global.ServiceName, LogLevel.Information, correlationID).ConfigureAwait(false);
+								}
+								catch (Exception ex)
+								{
+									await Global.WriteLogsAsync(Global.Logger, "Http.Handlers",  $"{ex.Message} => {message?.ToJson().ToString(Global.IsDebugLogEnabled ? Formatting.Indented : Formatting.None)}", ex, Global.ServiceName, LogLevel.Error, correlationID).ConfigureAwait(false);
+								}
+							},
+							async exception => await Global.WriteLogsAsync(Global.Logger, "Http.Handlers",  $"{exception.Message}", exception).ConfigureAwait(false)
+						);
+					Global.SecondaryInterCommunicateMessageUpdater?.Dispose();
+					Global.SecondaryInterCommunicateMessageUpdater = WAMPConnections.IncomingChannel.RealmProxy.Services
+						.GetSubject<CommunicateMessage>("net.vieapps.rtu.communicate.messages.apigateway")
+						.Subscribe(
+							async message =>
+							{
+								if (message.Type.IsEquals("Service#RequestInfo"))
+								{
+									var correlationID = UtilityService.NewUUID;
+									try
+									{
+										await Global.UpdateServiceInfoAsync().ConfigureAwait(false);
+										if (Global.IsDebugResultsEnabled)
+											await Global.WriteLogsAsync(Global.Logger, "Http.Handlers", 
+												$"Successfully process an inter-communicate message" + "\r\n" +
+												$"- Type: {message?.Type}" + "\r\n" +
+												$"- Message: {message?.Data?.ToString(Global.IsDebugLogEnabled ? Formatting.Indented : Formatting.None)}"
+											, null, Global.ServiceName, LogLevel.Information, correlationID).ConfigureAwait(false);
+									}
+									catch (Exception ex)
+									{
+										await Global.WriteLogsAsync(Global.Logger, "Http.Handlers",  $"{ex.Message} => {message?.ToJson().ToString(Global.IsDebugLogEnabled ? Formatting.Indented : Formatting.None)}", ex, Global.ServiceName, LogLevel.Error, correlationID).ConfigureAwait(false);
+									}
+								}
+							},
+							async exception => await Global.WriteLogsAsync(Global.Logger, "Http.Handlers",  $"{exception.Message}", exception).ConfigureAwait(false)
 						);
 				},
-				(sender, args) =>
+				(sender, arguments) =>
 				{
-					Global.Logger.LogDebug($"Outgoing channel to WAMP router is established - Session ID: {args.SessionId}");
+					Global.Logger.LogDebug($"Outgoing channel to WAMP router is established - Session ID: {arguments.SessionId}");
 					WAMPConnections.OutgoingChannel.Update(WAMPConnections.OutgoingChannelSessionID, Global.ServiceName, $"Outgoing ({Global.ServiceName} HTTP service)");
 					Task.Run(async () =>
 					{
@@ -373,7 +426,8 @@ namespace net.vieapps.Services.SRP
 		internal static void CloseWAMPChannels(int waitingTimes = 1234)
 		{
 			Global.UnregisterService(waitingTimes);
-			Global.InterCommunicateMessageUpdater?.Dispose();
+			Global.PrimaryInterCommunicateMessageUpdater?.Dispose();
+			Global.SecondaryInterCommunicateMessageUpdater?.Dispose();
 			WAMPConnections.CloseChannels();
 		}
 
@@ -386,7 +440,7 @@ namespace net.vieapps.Services.SRP
 				{
 					Handler.RedirectMaps[map.Host] = map;
 					if (Global.IsDebugLogEnabled)
-						await Global.WriteLogsAsync(Global.Logger, "RTU", $"Update redirect map successful => {map.ToJson()}", null).ConfigureAwait(false);
+						await Global.WriteLogsAsync(Global.Logger, "Http.Handlers",  $"Update redirect map successful => {map.ToJson()}", null).ConfigureAwait(false);
 				}
 			}
 			else if ("Update#Forward".IsEquals(message.Type))
@@ -396,7 +450,7 @@ namespace net.vieapps.Services.SRP
 				{
 					Handler.ForwardMaps[map.Host] = map;
 					if (Global.IsDebugLogEnabled)
-						await Global.WriteLogsAsync(Global.Logger, "RTU", $"Update forward map successful => {map.ToJson()}", null).ConfigureAwait(false);
+						await Global.WriteLogsAsync(Global.Logger, "Http.Handlers",  $"Update forward map successful => {map.ToJson()}", null).ConfigureAwait(false);
 				}
 			}
 		}
