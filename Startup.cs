@@ -96,13 +96,13 @@ namespace net.vieapps.Services.SRP
 				.UseResponseCompression()
 				.UseMiddleware<Handler>();
 
-			// connect to WAMP router
-			Handler.OpenWAMPChannels();
+			// connect to API Gateway Router
+			Handler.OpenRouterChannels();
 
 			// on started
 			appLifetime.ApplicationStarted.Register(() =>
 			{
-				Global.Logger.LogInformation($"WAMP router: {new Uri(WAMPConnections.GetRouterStrInfo()).GetResolvedURI()}");
+				Global.Logger.LogInformation($"API Gateway Router: {new Uri(RouterConnections.GetRouterStrInfo()).GetResolvedURI()}");
 				Global.Logger.LogInformation($"API Gateway HTTP service: {UtilityService.GetAppSetting("HttpUri:APIs", "None")}");
 				Global.Logger.LogInformation($"Files HTTP service: {UtilityService.GetAppSetting("HttpUri:Files", "None")}");
 				Global.Logger.LogInformation($"Portals HTTP service: {UtilityService.GetAppSetting("HttpUri:Portals", "None")}");
@@ -123,7 +123,7 @@ namespace net.vieapps.Services.SRP
 			appLifetime.ApplicationStopping.Register(() =>
 			{
 				Global.Logger = loggerFactory.CreateLogger<Startup>();
-				Handler.CloseWAMPChannels();
+				Handler.CloseRouterChannels();
 				Global.CancellationTokenSource.Cancel();
 			});
 
