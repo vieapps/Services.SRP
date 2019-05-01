@@ -65,7 +65,7 @@ namespace net.vieapps.Services.SRP
 			var logPath = UtilityService.GetAppSetting("Path:Logs");
 			if (!string.IsNullOrWhiteSpace(logPath) && Directory.Exists(logPath))
 			{
-				logPath = Path.Combine(logPath, "{Date}" + $"_{Global.ServiceName.ToLower()}.http.all.txt");
+				logPath = Path.Combine(logPath, "{Hour}" + $"_{Global.ServiceName.ToLower()}.http.all.txt");
 				loggerFactory.AddFile(logPath, this.LogLevel);
 			}
 			else
@@ -102,7 +102,7 @@ namespace net.vieapps.Services.SRP
 			// on started
 			appLifetime.ApplicationStarted.Register(() =>
 			{
-				Global.Logger.LogInformation($"API Gateway Router: {new Uri(RouterConnections.GetRouterStrInfo()).GetResolvedURI()}");
+				Global.Logger.LogInformation($"API Gateway Router: {new Uri(Router.GetRouterStrInfo()).GetResolvedURI()}");
 				Global.Logger.LogInformation($"API Gateway HTTP service: {UtilityService.GetAppSetting("HttpUri:APIs", "None")}");
 				Global.Logger.LogInformation($"Files HTTP service: {UtilityService.GetAppSetting("HttpUri:Files", "None")}");
 				Global.Logger.LogInformation($"Portals HTTP service: {UtilityService.GetAppSetting("HttpUri:Portals", "None")}");
