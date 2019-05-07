@@ -333,7 +333,7 @@ namespace net.vieapps.Services.SRP
 					Task.Run(() => Router.IncomingChannel.UpdateAsync(Router.IncomingChannelSessionID, Global.ServiceName, $"Incoming ({Global.ServiceName} HTTP service)")).ConfigureAwait(false);
 					Global.PrimaryInterCommunicateMessageUpdater?.Dispose();
 					Global.PrimaryInterCommunicateMessageUpdater = Router.IncomingChannel.RealmProxy.Services
-						.GetSubject<CommunicateMessage>("net.vieapps.rtu.communicate.messages.srp")
+						.GetSubject<CommunicateMessage>("messages.services.srp")
 						.Subscribe(
 							async message =>
 							{
@@ -350,7 +350,7 @@ namespace net.vieapps.Services.SRP
 						);
 					Global.SecondaryInterCommunicateMessageUpdater?.Dispose();
 					Global.SecondaryInterCommunicateMessageUpdater = Router.IncomingChannel.RealmProxy.Services
-						.GetSubject<CommunicateMessage>("net.vieapps.rtu.communicate.messages.apigateway")
+						.GetSubject<CommunicateMessage>("messages.services.apigateway")
 						.Subscribe(
 							async message =>
 							{
