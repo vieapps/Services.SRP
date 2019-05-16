@@ -47,7 +47,7 @@ namespace net.vieapps.Services.SRP
 		public Handler(RequestDelegate next)
 		{
 			this.Next = next;
-			if (ConfigurationManager.GetSection("net.vieapps.services.srp.maps") is AppConfigurationSectionHandler svcConfig)
+			if (ConfigurationManager.GetSection(UtilityService.GetAppSetting("Section:Maps", "net.vieapps.services.srp.maps")) is AppConfigurationSectionHandler svcConfig)
 			{
 				// global settings
 				this.RedirectToNoneWWW = "true".IsEquals(svcConfig.Section.Attributes["redirectToNoneWWW"]?.Value);
@@ -120,9 +120,9 @@ namespace net.vieapps.Services.SRP
 				$"=> Redirect to HTTPs: {this.RedirectToHTTPS}" + "\r\n" +
 				$"=> Default directory: {this.DefaultDirectory}" + "\r\n" +
 				$"=> Default file: {this.DefaultFile}" + "\r\n" +
-				$"=> Redirect maps: {(Handler.RedirectMaps.Count < 1 ? "None" : $"\r\n\t+ {string.Join("\r\n\t+ ", Handler.RedirectMaps.Select(m => $"{m.Key} => {m.Value.RedirectTo}"))}")}" + "\r\n" +
-				$"=> Forward maps: {(Handler.ForwardMaps.Count < 1 ? "None" : $"\r\n\t+ {string.Join("\r\n\t+ ", Handler.ForwardMaps.Select(m => $"{m.Key} => {m.Value.ForwardTo + $" ({m.Value.ForwardTokenName ?? "None"}/{m.Value.ForwardTokenValue ?? "None"})"}"))}")}" + "\r\n" +
-				$"=> Static maps: {(Handler.StaticMaps.Count < 1 ? "None" : $"\r\n\t+ {string.Join("\r\n\t+ ", Handler.StaticMaps.Select(m => $"{m.Key} => {m.Value.Directory + $" ({m.Value.RedirectToNoneWWW}/{m.Value.RedirectToHTTPS}/{m.Value.NotFound ?? "None"})"}"))}")}"
+				$"=> Redirect maps: {(Handler.RedirectMaps.Count < 1 ? "None" : $"\r\n\t+ {Handler.RedirectMaps.Select(m => $"{m.Key} => {m.Value.RedirectTo}").Join("\r\n\t+ ")}")}" + "\r\n" +
+				$"=> Forward maps: {(Handler.ForwardMaps.Count < 1 ? "None" : $"\r\n\t+ {Handler.ForwardMaps.Select(m => $"{m.Key} => {m.Value.ForwardTo + $" ({m.Value.ForwardTokenName ?? "None"}/{m.Value.ForwardTokenValue ?? "None"})"}").Join("\r\n\t+ ")}")}" + "\r\n" +
+				$"=> Static maps: {(Handler.StaticMaps.Count < 1 ? "None" : $"\r\n\t+ {Handler.StaticMaps.Select(m => $"{m.Key} => {m.Value.Directory + $" ({m.Value.RedirectToNoneWWW}/{m.Value.RedirectToHTTPS}/{m.Value.NotFound ?? "None"})"}").Join("\r\n\t+ ")}")}"
 			);
 		}
 
@@ -207,18 +207,15 @@ namespace net.vieapps.Services.SRP
 			context.Items["PipelineStopwatch"] = Stopwatch.StartNew();
 			var requestUri = context.GetRequestUri();
 
-			// request to favicon.ico file
-			if (requestUri.GetRequestPathSegments(true).First().Equals("favicon.ico"))
-			{
-				await context.ProcessFavouritesIconFileRequestAsync().ConfigureAwait(false);
-				return;
-			}
-
 			if (Global.IsVisitLogEnabled)
 				await context.WriteVisitStartingLogAsync().ConfigureAwait(false);
 
+			// request to favicon.ico file
+			if (requestUri.GetRequestPathSegments(true).First().Equals("favicon.ico"))
+				await context.ProcessFavouritesIconFileRequestAsync().ConfigureAwait(false);
+
 			// request of static files
-			if (Global.StaticSegments.Contains(requestUri.GetRequestPathSegments().First()))
+			else if (Global.StaticSegments.Contains(requestUri.GetRequestPathSegments().First()))
 				await context.ProcessStaticFileRequestAsync().ConfigureAwait(false);
 
 			// only allow GET method
@@ -247,7 +244,7 @@ namespace net.vieapps.Services.SRP
 		{
 			// prepare
 			var requestUri = context.GetRequestUri();
-			this.GetMap(requestUri.Host, Handler.StaticMaps, out Map map);
+			this.GetMap(requestUri.Host, Handler.StaticMaps, out var map);
 
 			// redirect
 			var redirectToHttps = (map != null ? map.RedirectToHTTPS : this.RedirectToHTTPS) && !requestUri.Scheme.IsEquals("https");
@@ -265,7 +262,7 @@ namespace net.vieapps.Services.SRP
 
 			// prepare file info
 			FileInfo fileInfo = null;
-			var filePath = $"{map?.Directory ?? this.DefaultDirectory}/{string.Join("/", requestUri.GetRequestPathSegments())}".Replace(@"\", "/").Replace("//", "/").Replace('/', Path.DirectorySeparatorChar);
+			var filePath = $"{map?.Directory ?? this.DefaultDirectory}/{requestUri.GetRequestPathSegments().Join("/")}".Replace(@"\", "/").Replace("//", "/").Replace('/', Path.DirectorySeparatorChar);
 			filePath += filePath.EndsWith(Path.DirectorySeparatorChar) ? this.DefaultFile : "";
 
 			// check to reduce traffic
@@ -323,14 +320,14 @@ namespace net.vieapps.Services.SRP
 		#endregion
 
 		#region Helper: API Gateway Router
-		internal static void OpenRouterChannels(int waitingTimes = 6789)
+		internal static void Connect(int waitingTimes = 6789)
 		{
-			Global.Logger.LogDebug($"Attempting to connect to API Gateway Router [{new Uri(Router.GetRouterStrInfo()).GetResolvedURI()}]");
-			Global.OpenRouterChannels(
+			Global.Logger.LogInformation($"Attempting to connect to API Gateway Router [{new Uri(Router.GetRouterStrInfo()).GetResolvedURI()}]");
+			Global.Connect(
 				(sender, arguments) =>
 				{
-					Global.Logger.LogDebug($"Incoming channel to API Gateway Router is established - Session ID: {arguments.SessionId}");
-					Task.Run(() => Router.IncomingChannel.UpdateAsync(Router.IncomingChannelSessionID, Global.ServiceName, $"Incoming ({Global.ServiceName} HTTP service)")).ConfigureAwait(false);
+					Router.IncomingChannel.Update(arguments.SessionId, Global.ServiceName, $"Incoming ({Global.ServiceName} HTTP service)");
+					Global.Logger.LogInformation($"The incoming channel to API Gateway Router is established - Session ID: {arguments.SessionId}");
 					Global.PrimaryInterCommunicateMessageUpdater?.Dispose();
 					Global.PrimaryInterCommunicateMessageUpdater = Router.IncomingChannel.RealmProxy.Services
 						.GetSubject<CommunicateMessage>("messages.services.srp")
@@ -368,10 +365,10 @@ namespace net.vieapps.Services.SRP
 				},
 				(sender, arguments) =>
 				{
-					Global.Logger.LogDebug($"Outgoing channel to API Gateway Router is established - Session ID: {arguments.SessionId}");
+					Router.OutgoingChannel.Update(arguments.SessionId, Global.ServiceName, $"Outgoing ({Global.ServiceName} HTTP service)");
+					Global.Logger.LogDebug($"The outgoing channel to API Gateway Router is established - Session ID: {arguments.SessionId}");
 					Task.Run(async () =>
 					{
-						await Router.OutgoingChannel.UpdateAsync(Router.OutgoingChannelSessionID, Global.ServiceName, $"Outgoing ({Global.ServiceName} HTTP service)").ConfigureAwait(false);
 						try
 						{
 							await Task.WhenAll(
@@ -379,46 +376,49 @@ namespace net.vieapps.Services.SRP
 								Global.InitializeRTUServiceAsync()
 							).ConfigureAwait(false);
 							Global.Logger.LogInformation("Helper services are succesfully initialized");
-							while (Router.IncomingChannel == null || Router.OutgoingChannel == null)
-								await Task.Delay(UtilityService.GetRandomNumber(234, 567), Global.CancellationTokenSource.Token).ConfigureAwait(false);
 						}
 						catch (Exception ex)
 						{
 							Global.Logger.LogError($"Error occurred while initializing helper services: {ex.Message}", ex);
 						}
 					})
-					.ContinueWith(async _ => await Global.RegisterServiceAsync("Http.WebSockets").ConfigureAwait(false), TaskContinuationOptions.OnlyOnRanToCompletion)
+					.ContinueWith(async _ =>
+					{
+						while (Router.IncomingChannel == null || Router.OutgoingChannel == null)
+							await Task.Delay(UtilityService.GetRandomNumber(234, 567), Global.CancellationTokenSource.Token).ConfigureAwait(false);
+						await Global.RegisterServiceAsync("Http.WebSockets").ConfigureAwait(false);
+					}, TaskContinuationOptions.OnlyOnRanToCompletion)
 					.ContinueWith(async _ => await Task.WhenAll(Handler.RedirectMaps
-						.Select((KeyValuePair<string, Map> kvp) => new CommunicateMessage
+						.Select((KeyValuePair<string, Map> kvp) => new CommunicateMessage(Global.ServiceName)
 						{
-							ServiceName = Global.ServiceName,
 							Type = "Update#Redirect",
 							Data = kvp.Value.ToJson()
 						})
-						.Select(message => Global.PublishAsync(message, Global.Logger))
+						.Select(message => message.PublishAsync(Global.Logger, "Http.WebSockets"))
 						.Concat(Handler.ForwardMaps
-							.Select((KeyValuePair<string, Map> kvp) => new CommunicateMessage
+							.Select((KeyValuePair<string, Map> kvp) => new CommunicateMessage(Global.ServiceName)
 							{
-								ServiceName = Global.ServiceName,
 								Type = "Update#Forward",
 								Data = kvp.Value.ToJson()
 							})
-							.Select(message => Global.PublishAsync(message, Global.Logger))
+							.Select(message => message.PublishAsync(Global.Logger, "Http.WebSockets"))
 						)
 						.ToList()
 					), TaskContinuationOptions.OnlyOnRanToCompletion)
 					.ConfigureAwait(false);
 				},
-				waitingTimes
+				waitingTimes,
+				exception => Global.Logger.LogError($"Cannot connect to API Gateway Router in period of times => {exception.Message}", exception),
+				exception => Global.Logger.LogError($"Error occurred while connecting to API Gateway Router => {exception.Message}", exception)
 			);
 		}
 
-		internal static void CloseRouterChannels(int waitingTimes = 1234)
+		internal static void Disconnect(int waitingTimes = 1234)
 		{
 			Global.UnregisterService("Http.WebSockets", waitingTimes);
 			Global.PrimaryInterCommunicateMessageUpdater?.Dispose();
 			Global.SecondaryInterCommunicateMessageUpdater?.Dispose();
-			Router.CloseChannels();
+			Global.Disconnect();
 		}
 
 		async static Task ProcessInterCommunicateMessageAsync(CommunicateMessage message)

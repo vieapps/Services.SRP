@@ -97,7 +97,7 @@ namespace net.vieapps.Services.SRP
 				.UseMiddleware<Handler>();
 
 			// connect to API Gateway Router
-			Handler.OpenRouterChannels();
+			Handler.Connect();
 
 			// on started
 			appLifetime.ApplicationStarted.Register(() =>
@@ -123,7 +123,7 @@ namespace net.vieapps.Services.SRP
 			appLifetime.ApplicationStopping.Register(() =>
 			{
 				Global.Logger = loggerFactory.CreateLogger<Startup>();
-				Handler.CloseRouterChannels();
+				Handler.Disconnect();
 				Global.CancellationTokenSource.Cancel();
 			});
 
