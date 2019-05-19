@@ -319,15 +319,13 @@ namespace net.vieapps.Services.SRP
 		}
 		#endregion
 
-		#region Helper: API Gateway Router
+		#region API Gateway Router
 		internal static void Connect(int waitingTimes = 6789)
 		{
 			Global.Logger.LogInformation($"Attempting to connect to API Gateway Router [{new Uri(Router.GetRouterStrInfo()).GetResolvedURI()}]");
 			Global.Connect(
 				(sender, arguments) =>
 				{
-					Router.IncomingChannel.Update(arguments.SessionId, Global.ServiceName, $"Incoming ({Global.ServiceName} HTTP service)");
-					Global.Logger.LogInformation($"The incoming channel to API Gateway Router is established - Session ID: {arguments.SessionId}");
 					Global.PrimaryInterCommunicateMessageUpdater?.Dispose();
 					Global.PrimaryInterCommunicateMessageUpdater = Router.IncomingChannel.RealmProxy.Services
 						.GetSubject<CommunicateMessage>("messages.services.srp")
@@ -363,40 +361,19 @@ namespace net.vieapps.Services.SRP
 							async exception => await Global.WriteLogsAsync(Global.Logger, "Http.WebSockets", $"Error occurred while fetching an inter-communicate message of API Gateway: {exception.Message}", exception).ConfigureAwait(false)
 						);
 				},
-				(sender, arguments) =>
+				(sender, arguments) => Task.Run(async () => await Global.RegisterServiceAsync("Http.WebSockets").ConfigureAwait(false)).ContinueWith(async _ =>
 				{
-					Router.OutgoingChannel.Update(arguments.SessionId, Global.ServiceName, $"Outgoing ({Global.ServiceName} HTTP service)");
-					Global.Logger.LogDebug($"The outgoing channel to API Gateway Router is established - Session ID: {arguments.SessionId}");
-					Task.Run(async () =>
-					{
-						try
-						{
-							await Task.WhenAll(
-								Global.InitializeLoggingServiceAsync(),
-								Global.InitializeRTUServiceAsync()
-							).ConfigureAwait(false);
-							Global.Logger.LogInformation("Helper services are succesfully initialized");
-						}
-						catch (Exception ex)
-						{
-							Global.Logger.LogError($"Error occurred while initializing helper services: {ex.Message}", ex);
-						}
-					})
-					.ContinueWith(async _ =>
-					{
-						while (Router.IncomingChannel == null || Router.OutgoingChannel == null)
-							await Task.Delay(UtilityService.GetRandomNumber(234, 567), Global.CancellationTokenSource.Token).ConfigureAwait(false);
-						await Global.RegisterServiceAsync("Http.WebSockets").ConfigureAwait(false);
-					}, TaskContinuationOptions.OnlyOnRanToCompletion)
-					.ContinueWith(async _ => await Task.WhenAll(Handler.RedirectMaps
-						.Select((KeyValuePair<string, Map> kvp) => new CommunicateMessage(Global.ServiceName)
+					while (Router.IncomingChannel == null)
+						await Task.Delay(UtilityService.GetRandomNumber(234, 567), Global.CancellationTokenSource.Token).ConfigureAwait(false);
+					await Task.WhenAll(
+						Handler.RedirectMaps.Select((KeyValuePair<string, Map> kvp) => new CommunicateMessage(Global.ServiceName)
 						{
 							Type = "Update#Redirect",
 							Data = kvp.Value.ToJson()
 						})
 						.Select(message => message.PublishAsync(Global.Logger, "Http.WebSockets"))
-						.Concat(Handler.ForwardMaps
-							.Select((KeyValuePair<string, Map> kvp) => new CommunicateMessage(Global.ServiceName)
+						.Concat(
+							Handler.ForwardMaps.Select((KeyValuePair<string, Map> kvp) => new CommunicateMessage(Global.ServiceName)
 							{
 								Type = "Update#Forward",
 								Data = kvp.Value.ToJson()
@@ -404,9 +381,8 @@ namespace net.vieapps.Services.SRP
 							.Select(message => message.PublishAsync(Global.Logger, "Http.WebSockets"))
 						)
 						.ToList()
-					), TaskContinuationOptions.OnlyOnRanToCompletion)
-					.ConfigureAwait(false);
-				},
+					).ConfigureAwait(false);
+				}, TaskContinuationOptions.OnlyOnRanToCompletion).ConfigureAwait(false),
 				waitingTimes,
 				exception => Global.Logger.LogError($"Cannot connect to API Gateway Router in period of times => {exception.Message}", exception),
 				exception => Global.Logger.LogError($"Error occurred while connecting to API Gateway Router => {exception.Message}", exception)
