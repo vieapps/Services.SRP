@@ -38,6 +38,8 @@ namespace net.vieapps.Services.SRP
 
 		string DefaultFile { get; set; } = "index.html";
 
+		string LoadBalancingHealthCheckUrl => UtilityService.GetAppSetting("HealthCheckUrl", "/load-balancing-health-check");
+
 		internal static Dictionary<string, Map> RedirectMaps { get; } = new Dictionary<string, Map>(StringComparer.OrdinalIgnoreCase);
 
 		internal static Dictionary<string, Map> ForwardMaps { get; } = new Dictionary<string, Map>(StringComparer.OrdinalIgnoreCase);
@@ -129,7 +131,7 @@ namespace net.vieapps.Services.SRP
 		public async Task Invoke(HttpContext context)
 		{
 			// load balancing health check
-			if (context.Request.Path.Value.IsEquals("/load-balancing-health-check"))
+			if (context.Request.Path.Value.IsEquals(this.LoadBalancingHealthCheckUrl))
 				await context.WriteAsync("OK", "text/plain", null, 0, null, TimeSpan.Zero, null, Global.CancellationTokenSource.Token).ConfigureAwait(false);
 
 			// maps
@@ -168,7 +170,13 @@ namespace net.vieapps.Services.SRP
 				catch (Exception ex)
 				{
 					await context.WriteLogsAsync("Http.Handlers", $"Error occurred while processing [{context.GetRequestUri()}] => {ex.Message}", ex).ConfigureAwait(false);
-					context.ShowHttpError(ex.GetHttpStatusCode(), ex.Message, ex.GetType().GetTypeName(true), context.GetCorrelationID(), ex, Global.IsDebugLogEnabled);
+					if (ex is WampException)
+					{
+						var wampException = (ex as WampException).GetDetails();
+						context.ShowHttpError(statusCode: wampException.Item1, message: wampException.Item2, type: wampException.Item3, correlationID: context.GetCorrelationID(), stack: wampException.Item4 + "\r\n\t" + ex.StackTrace, showStack: Global.IsDebugLogEnabled);
+					}
+					else
+						context.ShowHttpError(statusCode: ex.GetHttpStatusCode(), message: ex.Message, type: ex.GetTypeName(true), correlationID: context.GetCorrelationID(), ex: ex, showStack: Global.IsDebugLogEnabled);
 				}
 
 				// invoke next middleware
