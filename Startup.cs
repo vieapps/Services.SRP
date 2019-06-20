@@ -9,13 +9,15 @@ using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.AspNetCore;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Hosting;
+#if !NETCOREAPP2_2
 using Microsoft.Extensions.Hosting;
+#endif
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Caching.Distributed;
 using Newtonsoft.Json;
 using net.vieapps.Components.Utility;
@@ -43,7 +45,11 @@ namespace net.vieapps.Services.SRP
 				.AddHttpContextAccessor();
 		}
 
+#if NETCOREAPP2_2
+		public void Configure(IApplicationBuilder appBuilder, IApplicationLifetime appLifetime, IHostingEnvironment environment)
+#else
 		public void Configure(IApplicationBuilder appBuilder, IHostApplicationLifetime appLifetime, IWebHostEnvironment environment)
+#endif
 		{
 			// environments
 			var stopwatch = Stopwatch.StartNew();
