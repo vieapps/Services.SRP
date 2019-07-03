@@ -161,7 +161,7 @@ namespace net.vieapps.Services.SRP
 				{
 					var requestUri = context.GetRequestUri();
 					if (this.GetMap(requestUri.Host, Handler.RedirectMaps, out Map map))
-						context.Redirect($"{new Uri(map.RedirectTo + requestUri.PathAndQuery)}", true);
+						context.Redirect(new Uri(map.RedirectTo + requestUri.PathAndQuery), true);
 					else if (this.GetMap(requestUri.Host, Handler.ForwardMaps, out map))
 						await this.ProcessForwardRequestAsync(context).ConfigureAwait(false);
 					else
