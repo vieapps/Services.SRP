@@ -282,6 +282,8 @@ namespace net.vieapps.Services.SRP
 				if (context.GetHeaderParameter("If-Modified-Since") != null)
 				{
 					fileInfo = new FileInfo(filePath);
+					if (!fileInfo.Exists && File.Exists(Path.Combine(filePath, Path.DirectorySeparatorChar.ToString(), this.DefaultFile)))
+						fileInfo = new FileInfo(Path.Combine(filePath, Path.DirectorySeparatorChar.ToString(), this.DefaultFile));
 					if (fileInfo.Exists)
 					{
 						lastModifed = fileInfo.LastWriteTime.ToUnixTimestamp();
@@ -301,8 +303,13 @@ namespace net.vieapps.Services.SRP
 
 			// check existed
 			fileInfo = fileInfo ?? new FileInfo(filePath);
-			if (!fileInfo.Exists && !string.IsNullOrWhiteSpace(map?.NotFound))
-				fileInfo = new FileInfo(Path.Combine(Path.IsPathRooted(map.Directory) ? map.Directory : Path.Combine(this.DefaultDirectory, map.Directory), map.NotFound));
+			if (!fileInfo.Exists)
+			{
+				if (!string.IsNullOrWhiteSpace(map?.NotFound))
+					fileInfo = new FileInfo(Path.Combine(Path.IsPathRooted(map.Directory) ? map.Directory : Path.Combine(this.DefaultDirectory, map.Directory), map.NotFound));
+				else if (File.Exists(Path.Combine(filePath, Path.DirectorySeparatorChar.ToString(), this.DefaultFile)))
+					fileInfo = new FileInfo(Path.Combine(filePath, Path.DirectorySeparatorChar.ToString(), this.DefaultFile));
+			}
 
 			if (!fileInfo.Exists)
 			{
