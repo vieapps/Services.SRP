@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Configuration;
+using System.Xml;
 
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Hosting;
@@ -59,20 +60,36 @@ namespace net.vieapps.Services.SRP
 				this.DefaultFile = svcConfig.Section.Attributes["defaultFile"]?.Value ?? "index.html";
 
 				// individual settings
-				if (svcConfig.Section.SelectNodes("map") is System.Xml.XmlNodeList maps)
+				if (svcConfig.Section.SelectNodes("map") is XmlNodeList maps)
 					maps.ToList()
 						.Where(info => !string.IsNullOrWhiteSpace(info.Attributes["host"]?.Value))
-						.Select(info => new Map
+						.Select(info =>
 						{
-							Host = info.Attributes["host"].Value,
-							RedirectTo = info.Attributes["redirectTo"]?.Value,
-							ForwardTo = info.Attributes["forwardTo"]?.Value,
-							ForwardTokenName = info.Attributes["forwardTokenName"]?.Value,
-							ForwardTokenValue = info.Attributes["forwardTokenValue"]?.Value,
-							Directory = info.Attributes["directory"]?.Value,
-							NotFound = info.Attributes["notFound"]?.Value,
-							RedirectToNoneWWW = !string.IsNullOrWhiteSpace(info.Attributes["redirectToNoneWWW"]?.Value) ? "true".IsEquals(info.Attributes["redirectToNoneWWW"]?.Value) : this.RedirectToNoneWWW,
-							RedirectToHTTPS = !string.IsNullOrWhiteSpace(info.Attributes["redirectToHTTPS"]?.Value) ? "true".IsEquals(info.Attributes["redirectToHTTPS"]?.Value) : this.RedirectToHTTPS
+							var map = new Map
+							{
+								Host = info.Attributes["host"].Value,
+								RedirectTo = info.Attributes["redirectTo"]?.Value,
+								ForwardTo = info.Attributes["forwardTo"]?.Value,
+								ForwardTokenName = info.Attributes["forwardTokenName"]?.Value,
+								ForwardTokenValue = info.Attributes["forwardTokenValue"]?.Value,
+								Directory = info.Attributes["directory"]?.Value,
+								NotFound = info.Attributes["notFound"]?.Value,
+								RedirectToNoneWWW = !string.IsNullOrWhiteSpace(info.Attributes["redirectToNoneWWW"]?.Value) ? "true".IsEquals(info.Attributes["redirectToNoneWWW"]?.Value) : this.RedirectToNoneWWW,
+								RedirectToHTTPS = !string.IsNullOrWhiteSpace(info.Attributes["redirectToHTTPS"]?.Value) ? "true".IsEquals(info.Attributes["redirectToHTTPS"]?.Value) : this.RedirectToHTTPS
+							};
+							if (info.SelectNodes("param") is XmlNodeList parameters)
+								parameters.ToList().ForEach(param =>
+								{
+									var name = param.Attributes["name"]?.Value;
+									if (!string.IsNullOrWhiteSpace(name) && map.Parameters.FindIndex(p => p.Name.IsEquals(name)) < 0)
+										map.Parameters.Add(new MapParameter
+										{
+											Name = name,
+											Default = param.Attributes["default"]?.Value,
+											Attribute = param.Attributes["attribute"]?.Value
+										});
+								});
+							return map;
 						})
 						.Where(map => !string.IsNullOrWhiteSpace(map.RedirectTo) || !string.IsNullOrWhiteSpace(map.ForwardTo) || !string.IsNullOrWhiteSpace(map.Directory))
 						.ForEach(map =>
@@ -122,9 +139,9 @@ namespace net.vieapps.Services.SRP
 				$"=> Redirect to HTTPs: {this.RedirectToHTTPS}" + "\r\n" +
 				$"=> Default directory: {this.DefaultDirectory}" + "\r\n" +
 				$"=> Default file: {this.DefaultFile}" + "\r\n" +
-				$"=> Redirect maps: {(Handler.RedirectMaps.Count < 1 ? "None" : $"\r\n\t+ {Handler.RedirectMaps.Select(m => $"{m.Key} => {m.Value.RedirectTo}").Join("\r\n\t+ ")}")}" + "\r\n" +
-				$"=> Forward maps: {(Handler.ForwardMaps.Count < 1 ? "None" : $"\r\n\t+ {Handler.ForwardMaps.Select(m => $"{m.Key} => {m.Value.ForwardTo + $" ({m.Value.ForwardTokenName ?? "None"}/{m.Value.ForwardTokenValue ?? "None"})"}").Join("\r\n\t+ ")}")}" + "\r\n" +
-				$"=> Static maps: {(Handler.StaticMaps.Count < 1 ? "None" : $"\r\n\t+ {Handler.StaticMaps.Select(m => $"{m.Key} => {m.Value.Directory + $" ({m.Value.RedirectToNoneWWW}/{m.Value.RedirectToHTTPS}/{m.Value.NotFound ?? "None"})"}").Join("\r\n\t+ ")}")}"
+				$"=> Redirect maps: {(Handler.RedirectMaps.Count < 1 ? "None" : $"\r\n\t+ {Handler.RedirectMaps.Select(kvp => $"{kvp.Key} => {kvp.Value.RedirectTo}").Join("\r\n\t+ ")}")}" + "\r\n" +
+				$"=> Forward maps: {(Handler.ForwardMaps.Count < 1 ? "None" : $"\r\n\t+ {Handler.ForwardMaps.Select(kvp => $"{kvp.Key} => {kvp.Value.ForwardTo + $" ({kvp.Value.ForwardTokenName ?? "None"}/{kvp.Value.ForwardTokenValue ?? "None"})"}").Join("\r\n\t+ ")}")}" + "\r\n" +
+				$"=> Static maps: {(Handler.StaticMaps.Count < 1 ? "None" : $"\r\n\t+ {Handler.StaticMaps.Select(kvp => $"{kvp.Key} => {kvp.Value.Directory + $" ({kvp.Value.RedirectToNoneWWW}/{kvp.Value.RedirectToHTTPS}/{kvp.Value.NotFound ?? "None"})"}" + (kvp.Value.Parameters.Count < 1 ? "" : "\r\n\t> Parameters:\r\n\t> > " + kvp.Value.Parameters.Select(p => $"{p.Name} -> {p.Attribute} [{p.Default}]").Join("\r\n\t> > "))).Join("\r\n\t+ ")}")}"
 			);
 		}
 
@@ -160,7 +177,7 @@ namespace net.vieapps.Services.SRP
 				try
 				{
 					var requestUri = context.GetRequestUri();
-					if (this.GetMap(requestUri.Host, Handler.RedirectMaps, out Map map))
+					if (this.GetMap(requestUri.Host, Handler.RedirectMaps, out var map))
 						context.Redirect(new Uri(map.RedirectTo + requestUri.PathAndQuery), true);
 					else if (this.GetMap(requestUri.Host, Handler.ForwardMaps, out map))
 						await this.ProcessForwardRequestAsync(context).ConfigureAwait(false);
@@ -203,7 +220,7 @@ namespace net.vieapps.Services.SRP
 		async Task ProcessForwardRequestAsync(HttpContext context)
 		{
 			var requestUri = context.GetRequestUri();
-			this.GetMap(requestUri.Host, Handler.ForwardMaps, out Map map);
+			this.GetMap(requestUri.Host, Handler.ForwardMaps, out var map);
 			await context.WriteAsync($"Forward to => {new Uri(map.ForwardTo + requestUri.PathAndQuery + (requestUri.PathAndQuery.IndexOf("?") > -1 ? "&" : "?") + map.ForwardTokenName + "=" + map.ForwardTokenValue.UrlEncode())}", Global.CancellationTokenSource.Token).ConfigureAwait(false);
 		}
 		#endregion
@@ -218,12 +235,8 @@ namespace net.vieapps.Services.SRP
 			if (Global.IsVisitLogEnabled)
 				await context.WriteVisitStartingLogAsync().ConfigureAwait(false);
 
-			// request to favicon.ico file
-			if (requestUri.GetRequestPathSegments(true).First().Equals("favicon.ico"))
-				await context.ProcessFavouritesIconFileRequestAsync().ConfigureAwait(false);
-
 			// request of static files
-			else if (Global.StaticSegments.Contains(requestUri.GetRequestPathSegments().First()))
+			if (Global.StaticSegments.Contains(requestUri.GetRequestPathSegments().First()))
 				await context.ProcessStaticFileRequestAsync().ConfigureAwait(false);
 
 			// only allow GET method
@@ -318,8 +331,44 @@ namespace net.vieapps.Services.SRP
 				throw new FileNotFoundException($"Not Found [{requestUri}]");
 			}
 
-			// response
+			// prepare
 			var fileContent = await Global.GetStaticFileContentAsync(fileInfo).ConfigureAwait(false);
+			if (fileInfo.Extension.IsStartsWith(".htm") && map.Parameters.Count > 0)
+			{
+				var parameters = new List<Tuple<string, string>>();
+				if (string.IsNullOrWhiteSpace(context.GetQueryParameter("ngx")))
+					map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, parameter.Default ?? "")));
+				else
+					try
+					{
+						var json = JObject.Parse((context.GetQueryParameter("ngx") ?? "").Url64Decode());
+						var @object = await context.CallServiceAsync(new RequestInfo
+						{
+							Session = context.GetSession(),
+							ServiceName = json.Get<string>("Service"),
+							ObjectName = json.Get<string>("Object"),
+							Verb = "GET",
+							Query = new Dictionary<string, string>
+							{
+								{ "object-identity", json.Get<string>("ID") }
+							}
+						}, Global.CancellationTokenSource.Token).ConfigureAwait(false);
+						map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, string.IsNullOrWhiteSpace(parameter.Attribute) ? parameter.Default ?? "" : @object.Get<string>(parameter.Attribute) ?? parameter.Default ?? "")));
+					}
+					catch (Exception ex)
+					{
+						map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, parameter.Default ?? "")));
+						await context.WriteLogsAsync("Http.Handlers", $"Error occurred while processing parameters => {ex.Message}", ex).ConfigureAwait(false);
+					}
+				if (parameters.Count > 0)
+				{
+					var html = fileContent.GetString();
+					parameters.ForEach(parameter => html = html.Replace(StringComparison.OrdinalIgnoreCase, "{{" + parameter.Item1 + "}}", parameter.Item2));
+					fileContent = html.ToBytes();
+				}
+			}
+
+			// response
 			context.SetResponseHeaders((int)HttpStatusCode.OK, new Dictionary<string, string>
 			{
 				{ "Content-Type", $"{fileInfo.GetMimeType()}; charset=utf-8" },
@@ -381,14 +430,14 @@ namespace net.vieapps.Services.SRP
 					while (Router.IncomingChannel == null)
 						await Task.Delay(UtilityService.GetRandomNumber(234, 567), Global.CancellationTokenSource.Token).ConfigureAwait(false);
 					await Task.WhenAll(
-						Handler.RedirectMaps.Select((KeyValuePair<string, Map> kvp) => new CommunicateMessage(Global.ServiceName)
+						Handler.RedirectMaps.Select(kvp => new CommunicateMessage(Global.ServiceName)
 						{
 							Type = "Update#Redirect",
 							Data = kvp.Value.ToJson()
 						})
 						.Select(message => message.PublishAsync(Global.Logger, "Http.WebSockets"))
 						.Concat(
-							Handler.ForwardMaps.Select((KeyValuePair<string, Map> kvp) => new CommunicateMessage(Global.ServiceName)
+							Handler.ForwardMaps.Select(kvp => new CommunicateMessage(Global.ServiceName)
 							{
 								Type = "Update#Forward",
 								Data = kvp.Value.ToJson()
@@ -421,7 +470,7 @@ namespace net.vieapps.Services.SRP
 				{
 					Handler.RedirectMaps[map.Host] = map;
 					if (Global.IsDebugLogEnabled)
-						await Global.WriteLogsAsync(Global.Logger, "Http.WebSockets",  $"Update redirect map successful => {map.ToJson()}", null).ConfigureAwait(false);
+						await Global.WriteLogsAsync(Global.Logger, "Http.WebSockets", $"Update redirect map successful => {map.ToJson()}", null).ConfigureAwait(false);
 				}
 			}
 			else if ("Update#Forward".IsEquals(message.Type))
@@ -431,7 +480,7 @@ namespace net.vieapps.Services.SRP
 				{
 					Handler.ForwardMaps[map.Host] = map;
 					if (Global.IsDebugLogEnabled)
-						await Global.WriteLogsAsync(Global.Logger, "Http.WebSockets",  $"Update forward map successful => {map.ToJson()}", null).ConfigureAwait(false);
+						await Global.WriteLogsAsync(Global.Logger, "Http.WebSockets", $"Update forward map successful => {map.ToJson()}", null).ConfigureAwait(false);
 				}
 			}
 		}
@@ -445,18 +494,44 @@ namespace net.vieapps.Services.SRP
 
 	}
 
+	#region Map & Parameter
 	[Serializable]
 	public class Map
 	{
 		public Map() { }
+
 		public string Host { get; set; } = "";
-		public string RedirectTo { get; set; } = null;
-		public string ForwardTo { get; set; } = null;
-		public string ForwardTokenName { get; set; } = null;
-		public string ForwardTokenValue { get; set; } = null;
+
+		public string RedirectTo { get; set; }
+
+		public string ForwardTo { get; set; }
+
+		public string ForwardTokenName { get; set; }
+
+		public string ForwardTokenValue { get; set; }
+
 		public string Directory { get; set; } = "";
-		public string NotFound { get; set; } = null;
+
+		public string NotFound { get; set; }
+
 		public bool RedirectToNoneWWW { get; set; } = false;
+
 		public bool RedirectToHTTPS { get; set; } = false;
+
+		public List<MapParameter> Parameters { get; } = new List<MapParameter>();
 	}
+
+	[Serializable]
+	public class MapParameter
+	{
+		public MapParameter() { }
+
+		public string Name { get; set; } = "";
+
+		public string Default { get; set; }
+
+		public string Attribute { get; set; }
+	}
+	#endregion
+
 }
