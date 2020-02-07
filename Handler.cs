@@ -13,6 +13,7 @@ using System.Xml;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.StaticFiles;
+using Microsoft.AspNetCore.WebUtilities;
 
 using Microsoft.Extensions.Logging;
 
@@ -177,16 +178,20 @@ namespace net.vieapps.Services.SRP
 				try
 				{
 					var requestUri = context.GetRequestUri();
-					if (this.GetMap(requestUri.Host, Handler.RedirectMaps, out var map))
+					if (Handler.RedirectMaps.Get(requestUri.Host, out var map))
+					{
+						if (Global.IsDebugLogEnabled)
+							await context.WriteLogsAsync("Http.Redirects", $"Redirect to other domain ({requestUri} => {map.RedirectTo + requestUri.PathAndQuery})").ConfigureAwait(false);
 						context.Redirect(new Uri(map.RedirectTo + requestUri.PathAndQuery), true);
-					else if (this.GetMap(requestUri.Host, Handler.ForwardMaps, out map))
+					}
+					else if (Handler.ForwardMaps.Get(requestUri.Host, out map))
 						await this.ProcessForwardRequestAsync(context).ConfigureAwait(false);
 					else
 						await this.ProcessStaticRequestAsync(context).ConfigureAwait(false);
 				}
 				catch (Exception ex)
 				{
-					await context.WriteLogsAsync("Http.Handlers", $"Error occurred while processing [{context.GetRequestUri()}] => {ex.Message}", ex).ConfigureAwait(false);
+					await context.WriteLogsAsync("Http.Errors", $"Error occurred while processing [{context.GetRequestUri()}] => {ex.Message}", ex).ConfigureAwait(false);
 					if (ex is WampException)
 					{
 						var wampException = (ex as WampException).GetDetails();
@@ -209,18 +214,11 @@ namespace net.vieapps.Services.SRP
 			}
 		}
 
-		bool GetMap(string host, Dictionary<string, Map> maps, out Map map)
-		   => maps.TryGetValue(host, out map)
-			   ? true
-			   : host.IsStartsWith("www.")
-				   ? maps.TryGetValue(host.Right(host.Length - 4), out map)
-				   : false;
-
 		#region Process forwarding requests
 		async Task ProcessForwardRequestAsync(HttpContext context)
 		{
 			var requestUri = context.GetRequestUri();
-			this.GetMap(requestUri.Host, Handler.ForwardMaps, out var map);
+			Handler.ForwardMaps.Get(requestUri.Host, out var map);
 			await context.WriteAsync($"Forward to => {new Uri(map.ForwardTo + requestUri.PathAndQuery + (requestUri.PathAndQuery.IndexOf("?") > -1 ? "&" : "?") + map.ForwardTokenName + "=" + map.ForwardTokenValue.UrlEncode())}", Global.CancellationTokenSource.Token).ConfigureAwait(false);
 		}
 		#endregion
@@ -229,33 +227,36 @@ namespace net.vieapps.Services.SRP
 		async Task ProcessStaticRequestAsync(HttpContext context)
 		{
 			//  prepare
-			context.Items["PipelineStopwatch"] = Stopwatch.StartNew();
+			context.SetItem("PipelineStopwatch", Stopwatch.StartNew());
 			var requestUri = context.GetRequestUri();
 
 			if (Global.IsVisitLogEnabled)
 				await context.WriteVisitStartingLogAsync().ConfigureAwait(false);
 
-			// request of static files
-			if (Global.StaticSegments.Contains(requestUri.GetRequestPathSegments().First()))
-				await context.ProcessStaticFileRequestAsync().ConfigureAwait(false);
-
 			// only allow GET method
-			else if (!context.Request.Method.IsEquals("GET"))
+			if (!context.Request.Method.IsEquals("GET"))
 				context.ShowHttpError((int)HttpStatusCode.MethodNotAllowed, $"Method {context.Request.Method} is not allowed", "MethodNotAllowedException", context.GetCorrelationID());
 
-			// process
 			else
-				try
-				{
-					var fileInfo = await this.ProcessFileRequestAsync(context).ConfigureAwait(false);
-					if (fileInfo != null && Global.IsDebugLogEnabled)
-						await context.WriteLogsAsync("Http.Handlers", $"Success response ({fileInfo.FullName} - {fileInfo.Length:#,##0} bytes)").ConfigureAwait(false);
-				}
-				catch (Exception ex)
-				{
-					await context.WriteLogsAsync("Http.Handlers", $"Failure response [{requestUri}]", ex).ConfigureAwait(false);
-					context.ShowHttpError(ex.GetHttpStatusCode(), ex.Message, ex.GetType().GetTypeName(true), context.GetCorrelationID(), ex, Global.IsDebugLogEnabled);
-				}
+			{
+				// process request of static files
+				if (Global.StaticSegments.Contains(requestUri.GetRequestPathSegments().First()))
+					await context.ProcessStaticFileRequestAsync().ConfigureAwait(false);
+
+				// process request of other ifles
+				else
+					try
+					{
+						var fileInfo = await this.ProcessFileRequestAsync(context).ConfigureAwait(false);
+						if (fileInfo != null && Global.IsDebugLogEnabled)
+							await context.WriteLogsAsync("Http.StaticFiles", $"Success response ({fileInfo.FullName} - {fileInfo.Length:#,##0} bytes)").ConfigureAwait(false);
+					}
+					catch (Exception ex)
+					{
+						await context.WriteLogsAsync("Http.StaticFiles", $"Failure response [{requestUri}]", ex).ConfigureAwait(false);
+						context.ShowHttpError(ex.GetHttpStatusCode(), ex.Message, ex.GetType().GetTypeName(true), context.GetCorrelationID(), ex, Global.IsDebugLogEnabled);
+					}
+			}
 
 			if (Global.IsVisitLogEnabled)
 				await context.WriteVisitFinishingLogAsync().ConfigureAwait(false);
@@ -265,7 +266,7 @@ namespace net.vieapps.Services.SRP
 		{
 			// prepare
 			var requestUri = context.GetRequestUri();
-			this.GetMap(requestUri.Host, Handler.StaticMaps, out var map);
+			Handler.StaticMaps.Get(requestUri.Host, out var map);
 
 			// redirect
 			var redirectToHttps = (map != null ? map.RedirectToHTTPS : this.RedirectToHTTPS) && !requestUri.Scheme.IsEquals("https");
@@ -276,8 +277,8 @@ namespace net.vieapps.Services.SRP
 				url = redirectToHttps ? url.Replace("http://", "https://") : url;
 				url = redirectToNoneWWW ? url.Replace("://www.", "://") : url;
 				if (Global.IsDebugLogEnabled)
-					await context.WriteLogsAsync("Http.Handlers", $"Redirect: {requestUri} => {url}");
-				context.Redirect(url);
+					await context.WriteLogsAsync("Http.Redirects", $"Redirect to HTTPS/None WWW ({requestUri} => {url})");
+				context.Redirect(url, true);
 				return null;
 			}
 
@@ -295,8 +296,8 @@ namespace net.vieapps.Services.SRP
 				if (context.GetHeaderParameter("If-Modified-Since") != null)
 				{
 					fileInfo = new FileInfo(filePath);
-					if (!fileInfo.Exists && File.Exists(Path.Combine(filePath, Path.DirectorySeparatorChar.ToString(), this.DefaultFile)))
-						fileInfo = new FileInfo(Path.Combine(filePath, Path.DirectorySeparatorChar.ToString(), this.DefaultFile));
+					if (!fileInfo.Exists && File.Exists(Path.Combine(filePath, $"{Path.DirectorySeparatorChar}", this.DefaultFile)))
+						fileInfo = new FileInfo(Path.Combine(filePath, $"{Path.DirectorySeparatorChar}", this.DefaultFile));
 					if (fileInfo.Exists)
 					{
 						lastModifed = fileInfo.LastWriteTime.ToUnixTimestamp();
@@ -309,7 +310,7 @@ namespace net.vieapps.Services.SRP
 				{
 					context.SetResponseHeaders((int)HttpStatusCode.NotModified, eTag, lastModifed, "public", context.GetCorrelationID());
 					if (Global.IsDebugLogEnabled)
-						await context.WriteLogsAsync("Http.Handlers", $"Success response with status code 304 to reduce traffic ({filePath})").ConfigureAwait(false);
+						await context.WriteLogsAsync("Http.StaticFiles", $"Success response with status code 304 to reduce traffic ({filePath})").ConfigureAwait(false);
 					return fileInfo;
 				}
 			}
@@ -320,14 +321,14 @@ namespace net.vieapps.Services.SRP
 			{
 				if (!string.IsNullOrWhiteSpace(map?.NotFound))
 					fileInfo = new FileInfo(Path.Combine(Path.IsPathRooted(map.Directory) ? map.Directory : Path.Combine(this.DefaultDirectory, map.Directory), map.NotFound));
-				else if (File.Exists(Path.Combine(filePath, Path.DirectorySeparatorChar.ToString(), this.DefaultFile)))
-					fileInfo = new FileInfo(Path.Combine(filePath, Path.DirectorySeparatorChar.ToString(), this.DefaultFile));
+				else if (File.Exists(Path.Combine(filePath, $"{Path.DirectorySeparatorChar}", this.DefaultFile)))
+					fileInfo = new FileInfo(Path.Combine(filePath, $"{Path.DirectorySeparatorChar}", this.DefaultFile));
 			}
 
 			if (!fileInfo.Exists)
 			{
 				if (Global.IsDebugLogEnabled)
-					await context.WriteLogsAsync("Http.Handlers", $"Requested file is not found [{requestUri}] => [{fileInfo.FullName}]").ConfigureAwait(false);
+					await context.WriteLogsAsync("Http.StaticFiles", $"Requested file is not found [{requestUri}] => [{fileInfo.FullName}]").ConfigureAwait(false);
 				throw new FileNotFoundException($"Not Found [{requestUri}]");
 			}
 
@@ -336,30 +337,42 @@ namespace net.vieapps.Services.SRP
 			if (fileInfo.Extension.IsStartsWith(".htm") && map.Parameters.Count > 0)
 			{
 				var parameters = new List<Tuple<string, string>>();
-				if (string.IsNullOrWhiteSpace(context.GetQueryParameter("ngx")))
+
+				var requestInfo = context.GetQueryParameter("ngx");
+				if (string.IsNullOrWhiteSpace(requestInfo))
 					map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, parameter.Default ?? "")));
+
 				else
 					try
 					{
-						var json = JObject.Parse((context.GetQueryParameter("ngx") ?? "").Url64Decode());
-						var @object = await context.CallServiceAsync(new RequestInfo
+						if (context.Request.QueryString.ToDictionary().ContainsKey(requestInfo))
 						{
-							Session = context.GetSession(),
-							ServiceName = json.Get<string>("Service"),
-							ObjectName = json.Get<string>("Object"),
-							Verb = "GET",
-							Query = new Dictionary<string, string>
+							requestInfo = context.GetQueryParameter(requestInfo).Url64Decode();
+							requestInfo = QueryHelpers.ParseQuery(requestInfo.Right(requestInfo.Length - requestInfo.IndexOf("?")))["x-request"].ToString().Url64Decode();
+						}
+						else
+							requestInfo = requestInfo.Url64Decode();
+
+						var serviceInfo = JObject.Parse(requestInfo);
+						var serviceObject = await context.CallServiceAsync(new RequestInfo(context.GetSession(), serviceInfo.Get<string>("Service"), serviceInfo.Get<string>("Object"), "GET")
+						{
+							Query = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 							{
-								{ "object-identity", json.Get<string>("ID") }
-							}
+								{ "object-identity", serviceInfo.Get<string>("ID") }
+							},
+							CorrelationID = context.GetCorrelationID()
 						}, Global.CancellationTokenSource.Token).ConfigureAwait(false);
-						map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, string.IsNullOrWhiteSpace(parameter.Attribute) ? parameter.Default ?? "" : @object.Get<string>(parameter.Attribute) ?? parameter.Default ?? "")));
+
+						map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, string.IsNullOrWhiteSpace(parameter.Attribute) ? parameter.Default ?? "" : serviceObject.Get<string>(parameter.Attribute) ?? parameter.Default ?? "")));
+						if (Global.IsDebugLogEnabled)
+							await context.WriteLogsAsync("Http.StaticFiles", $"Parameters of static HTML file:\r\n\t+ {parameters.Select(parameter => $"{parameter.Item1}: {parameter.Item2}").Join("\r\n\t+ ")}").ConfigureAwait(false);
 					}
 					catch (Exception ex)
 					{
 						map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, parameter.Default ?? "")));
-						await context.WriteLogsAsync("Http.Handlers", $"Error occurred while processing parameters => {ex.Message}", ex).ConfigureAwait(false);
+						await context.WriteLogsAsync("Http.StaticFiles", $"Error occurred while processing parameters => {ex.Message}", ex).ConfigureAwait(false);
 					}
+
 				if (parameters.Count > 0)
 				{
 					var html = fileContent.GetString();
@@ -376,7 +389,7 @@ namespace net.vieapps.Services.SRP
 				{ "Last-Modified", $"{fileInfo.LastWriteTime.ToHttpString()}" },
 				{ "Cache-Control", "public" },
 				{ "Expires", $"{DateTime.Now.AddMinutes(13).ToHttpString()}" },
-				{ "X-CorrelationID", context.GetCorrelationID() }
+				{ "X-Correlation-ID", context.GetCorrelationID() }
 			});
 			await context.WriteAsync(fileContent, Global.CancellationTokenSource.Token).ConfigureAwait(false);
 			return fileInfo;
@@ -528,9 +541,19 @@ namespace net.vieapps.Services.SRP
 
 		public string Name { get; set; } = "";
 
-		public string Default { get; set; }
-
 		public string Attribute { get; set; }
+
+		public string Default { get; set; }
+	}
+
+	internal static class HandlerExtensions
+	{
+		public static bool Get(this Dictionary<string, Map> maps, string host, out Map map)
+		   => maps.TryGetValue(host, out map)
+			   ? true
+			   : host.IsStartsWith("www.")
+				   ? maps.TryGetValue(host.Right(host.Length - 4), out map)
+				   : false;
 	}
 	#endregion
 
