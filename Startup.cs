@@ -12,7 +12,7 @@ using Microsoft.AspNetCore;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Hosting;
-#if !NETCOREAPP2_0 && !NETCOREAPP2_1 && !NETCOREAPP2_2
+#if !NETCOREAPP2_1
 using Microsoft.Extensions.Hosting;
 #endif
 using Microsoft.Extensions.Logging;
@@ -34,7 +34,7 @@ namespace net.vieapps.Services.SRP
 
 		public IConfiguration Configuration { get; }
 
-		LogLevel LogLevel => this.Configuration.GetAppSetting("Logging/LogLevel/Default", UtilityService.GetAppSetting("Logs:Level", "Information")).ToEnum<LogLevel>();
+		LogLevel LogLevel => this.Configuration.GetAppSetting("Logging/LogLevel/Default", UtilityService.GetAppSetting("Logs:Level", "Information")).TryToEnum(out LogLevel logLevel) ? logLevel : LogLevel.Information;
 
 		public void ConfigureServices(IServiceCollection services)
 		{
@@ -45,11 +45,16 @@ namespace net.vieapps.Services.SRP
 				.AddHttpContextAccessor();
 		}
 
-#if !NETCOREAPP2_0 && !NETCOREAPP2_1 && !NETCOREAPP2_2
-		public void Configure(IApplicationBuilder appBuilder, IHostApplicationLifetime appLifetime, IWebHostEnvironment environment)
+		public void Configure(
+			IApplicationBuilder appBuilder,
+#if !NETCOREAPP2_1
+			IHostApplicationLifetime appLifetime,
+			IWebHostEnvironment environment
 #else
-		public void Configure(IApplicationBuilder appBuilder, IApplicationLifetime appLifetime, IHostingEnvironment environment)
+			IApplicationLifetime appLifetime,
+			IHostingEnvironment environment
 #endif
+		)
 		{
 			// environments
 			var stopwatch = Stopwatch.StartNew();
@@ -91,6 +96,9 @@ namespace net.vieapps.Services.SRP
 			Global.Logger.LogInformation($"Environment:\r\n\t- User: {Environment.UserName.ToLower()} @ {Environment.MachineName.ToLower()}\r\n\t- Platform: {RuntimeInformation.FrameworkDescription} @ {(RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "Windows" : RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? "Linux" : "macOS")} {RuntimeInformation.OSArchitecture} ({(RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "Macintosh; Intel Mac OS X; " : "")}{RuntimeInformation.OSDescription.Trim()})");
 			Global.Logger.LogInformation($"Service URIs:\r\n\t- Round robin: services.{Global.ServiceName.ToLower()}.http\r\n\t- Single (unique): services.{Extensions.GetUniqueName(Global.ServiceName + ".http")}");
 
+			// connect to API Gateway Router
+			Handler.Connect();
+
 			// setup middlewares
 			appBuilder
 				.UseForwardedHeaders(Global.GetForwardedHeadersOptions())
@@ -99,8 +107,8 @@ namespace net.vieapps.Services.SRP
 				.UseResponseCompression()
 				.UseMiddleware<Handler>();
 
-			// connect to API Gateway Router
-			Handler.Connect();
+			// setup the caching storage
+			Global.Cache = appBuilder.ApplicationServices.GetService<ICache>();
 
 			// on started
 			appLifetime.ApplicationStarted.Register(() =>
