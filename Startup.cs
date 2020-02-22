@@ -28,9 +28,11 @@ namespace net.vieapps.Services.SRP
 {
 	public class Startup
 	{
-		public static void Main(string[] args) => WebHost.CreateDefaultBuilder(args).Run<Startup>(args, 8028);
+		public static void Main(string[] args)
+			=> WebHost.CreateDefaultBuilder(args).Run<Startup>(args, 8028);
 
-		public Startup(IConfiguration configuration) => this.Configuration = configuration;
+		public Startup(IConfiguration configuration)
+			=> this.Configuration = configuration;
 
 		public IConfiguration Configuration { get; }
 
@@ -142,7 +144,7 @@ namespace net.vieapps.Services.SRP
 			appLifetime.ApplicationStopped.Register(() =>
 			{
 				Global.CancellationTokenSource.Dispose();
-				Global.Logger.LogInformation($"The {Global.ServiceName} HTTP service is stopped");
+				Global.Logger.LogInformation($"The {Global.ServiceName} HTTP service was stopped");
 			});
 
 			// don't terminate the process immediately, wait for the Main thread to exit gracefully

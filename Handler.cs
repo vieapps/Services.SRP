@@ -471,7 +471,7 @@ namespace net.vieapps.Services.SRP
 			Global.UnregisterService("Http.WebSockets", waitingTimes);
 			Global.PrimaryInterCommunicateMessageUpdater?.Dispose();
 			Global.SecondaryInterCommunicateMessageUpdater?.Dispose();
-			Global.Disconnect();
+			Global.Disconnect(waitingTimes);
 		}
 
 		async static Task ProcessInterCommunicateMessageAsync(CommunicateMessage message)
@@ -501,7 +501,7 @@ namespace net.vieapps.Services.SRP
 		static async Task ProcessAPIGatewayCommunicateMessageAsync(CommunicateMessage message)
 		{
 			if (message.Type.IsEquals("Service#RequestInfo"))
-				await Global.UpdateServiceInfoAsync("Http.WebSockets").ConfigureAwait(false);
+				await Global.SendServiceInfoAsync("Http.WebSockets").ConfigureAwait(false);
 		}
 		#endregion
 
