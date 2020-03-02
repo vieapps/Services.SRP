@@ -498,11 +498,10 @@ namespace net.vieapps.Services.SRP
 			}
 		}
 
-		static async Task ProcessAPIGatewayCommunicateMessageAsync(CommunicateMessage message)
-		{
-			if (message.Type.IsEquals("Service#RequestInfo"))
-				await Global.SendServiceInfoAsync("Http.WebSockets").ConfigureAwait(false);
-		}
+		static Task ProcessAPIGatewayCommunicateMessageAsync(CommunicateMessage message)
+			=> message.Type.IsEquals("Service#RequestInfo")
+				? Global.SendServiceInfoAsync("Http.WebSockets")
+				: Task.CompletedTask;
 		#endregion
 
 	}
