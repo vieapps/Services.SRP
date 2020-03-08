@@ -40,11 +40,22 @@ namespace net.vieapps.Services.SRP
 
 		public void ConfigureServices(IServiceCollection services)
 		{
+			// mandatory services
 			services
 				.AddResponseCompression(options => options.EnableForHttps = true)
 				.AddLogging(builder => builder.SetMinimumLevel(this.LogLevel))
 				.AddCache(options => this.Configuration.GetSection("Cache").Bind(options))
 				.AddHttpContextAccessor();
+
+#if !NETCOREAPP2_1
+			// config options of IIS server (for working with InProcess hosting model)
+			if (Global.UseIISInProcess)
+				services.Configure<IISServerOptions>(options => Global.PrepareIISServerOptions(options, _ =>
+				{
+					options.AllowSynchronousIO = true;
+					options.MaxRequestBodySize = 1024 * 1024 * Global.MaxRequestBodySize;
+				}));
+#endif
 		}
 
 		public void Configure(
