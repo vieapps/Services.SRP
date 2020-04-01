@@ -40,7 +40,7 @@ namespace net.vieapps.Services.SRP
 
 		string DefaultFile { get; set; } = "index.html";
 
-		string LoadBalancingHealthCheckUrl => UtilityService.GetAppSetting("HealthCheckUrl", "/load-balancing-health-check");
+		string LoadBalancingHealthCheckUrl { get; } = UtilityService.GetAppSetting("HealthCheckUrl", "/load-balancing-health-check");
 
 		internal static Dictionary<string, Map> RedirectMaps { get; } = new Dictionary<string, Map>(StringComparer.OrdinalIgnoreCase);
 
@@ -339,20 +339,37 @@ namespace net.vieapps.Services.SRP
 				var parameters = new List<Tuple<string, string>>();
 
 				var requestInfo = context.GetQueryParameter("ngx");
-				if (string.IsNullOrWhiteSpace(requestInfo))
-					map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, parameter.Default ?? "")));
-
-				else
+				if (!string.IsNullOrWhiteSpace(requestInfo) && !string.IsNullOrWhiteSpace(context.GetQueryParameter(requestInfo)))
+				{
 					try
 					{
-						if (context.Request.QueryString.ToDictionary().ContainsKey(requestInfo))
+						requestInfo = context.GetQueryParameter(requestInfo).Url64Decode();
+						requestInfo = QueryHelpers.ParseQuery(requestInfo.Right(requestInfo.Length - requestInfo.IndexOf("?")))["x-request"].ToString().Url64Decode();
+					}
+					catch (Exception ex)
+					{
+						requestInfo = null;
+						await context.WriteLogsAsync("Http.StaticFiles", $"Error occurred while parsing parameters => {ex.Message}", ex).ConfigureAwait(false);
+					}
+				}
+				else
+				{
+					requestInfo = context.GetQueryParameter("x-request");
+					if (!string.IsNullOrWhiteSpace(requestInfo))
+						try
 						{
-							requestInfo = context.GetQueryParameter(requestInfo).Url64Decode();
-							requestInfo = QueryHelpers.ParseQuery(requestInfo.Right(requestInfo.Length - requestInfo.IndexOf("?")))["x-request"].ToString().Url64Decode();
-						}
-						else
 							requestInfo = requestInfo.Url64Decode();
+						}
+						catch (Exception ex)
+						{
+							requestInfo = null;
+							await context.WriteLogsAsync("Http.StaticFiles", $"Error occurred while parsing parameters => {ex.Message}", ex).ConfigureAwait(false);
+						}
+				}
 
+				if (!string.IsNullOrWhiteSpace(requestInfo))
+					try
+					{
 						var serviceInfo = JObject.Parse(requestInfo);
 						var serviceObject = await context.CallServiceAsync(new RequestInfo(context.GetSession(), serviceInfo.Get<string>("Service"), serviceInfo.Get<string>("Object"), "GET")
 						{
@@ -372,6 +389,8 @@ namespace net.vieapps.Services.SRP
 						map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, parameter.Default ?? "")));
 						await context.WriteLogsAsync("Http.StaticFiles", $"Error occurred while processing parameters => {ex.Message}", ex).ConfigureAwait(false);
 					}
+				else
+					map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, parameter.Default ?? "")));
 
 				if (parameters.Count > 0)
 				{
