@@ -249,7 +249,7 @@ namespace net.vieapps.Services.SRP
 					{
 						var fileInfo = await this.ProcessFileRequestAsync(context).ConfigureAwait(false);
 						if (fileInfo != null && Global.IsDebugLogEnabled)
-							await context.WriteLogsAsync("Http.StaticFiles", $"Success response ({fileInfo.FullName} - {fileInfo.Length:#,##0} bytes)").ConfigureAwait(false);
+							await context.WriteLogsAsync("Http.StaticFiles", $"Success response ({fileInfo.FullName})").ConfigureAwait(false);
 					}
 					catch (Exception ex)
 					{
@@ -284,7 +284,7 @@ namespace net.vieapps.Services.SRP
 
 			// prepare file info
 			FileInfo fileInfo = null;
-			var filePath = $"{map?.Directory ?? this.DefaultDirectory}/{requestUri.GetRequestPathSegments().Join("/")}".Replace(@"\", "/").Replace("//", "/").Replace('/', Path.DirectorySeparatorChar);
+			var filePath = $"{map?.Directory ?? this.DefaultDirectory}/{requestUri.GetRequestPathSegments().Join("/")}".Replace(@"\", "/").Replace("//", "/").Replace('/', Path.DirectorySeparatorChar).Replace("%20", " ").Replace("+", " ");
 			filePath += filePath.EndsWith(Path.DirectorySeparatorChar) ? this.DefaultFile : "";
 
 			// check to reduce traffic
@@ -332,85 +332,103 @@ namespace net.vieapps.Services.SRP
 				throw new FileNotFoundException($"Not Found [{requestUri}]");
 			}
 
-			// prepare
-			var fileContent = await Global.GetStaticFileContentAsync(fileInfo).ConfigureAwait(false);
-			if (fileInfo.Extension.IsStartsWith(".htm") && map.Parameters.Count > 0)
+			// prepare the responsne
+			var mimeType = fileInfo.GetMimeType();
+			var headers = new Dictionary<string, string>
 			{
-				var parameters = new List<Tuple<string, string>>();
+				{ "Content-Type", $"{mimeType}; charset=utf-8" },
+				{ "ETag", eTag },
+				{ "Last-Modified", $"{fileInfo.LastWriteTime.ToHttpString()}" },
+				{ "Cache-Control", "public" },
+				{ "Expires", $"{DateTime.Now.AddMinutes(13).ToHttpString()}" },
+				{ "X-Correlation-ID", context.GetCorrelationID() }
+			};
 
-				var requestInfo = context.GetQueryParameter("ngx");
-				if (!string.IsNullOrWhiteSpace(requestInfo) && !string.IsNullOrWhiteSpace(context.GetQueryParameter(requestInfo)))
+			// write text files (HTML, JSON, CSS)
+			if (mimeType.IsStartsWith("text/") || fileInfo.Extension.IsStartsWith(".json") || fileInfo.Extension.IsStartsWith(".js"))
+			{
+				// get file content
+				var fileContent = await Global.GetStaticFileContentAsync(fileInfo).ConfigureAwait(false);
+
+				// prepare social tags
+				if (fileInfo.Extension.IsStartsWith(".htm") && map.Parameters.Count > 0)
 				{
-					try
+					var parameters = new List<Tuple<string, string>>();
+
+					var requestInfo = context.GetQueryParameter("ngx");
+					if (!string.IsNullOrWhiteSpace(requestInfo) && !string.IsNullOrWhiteSpace(context.GetQueryParameter(requestInfo)))
 					{
-						requestInfo = context.GetQueryParameter(requestInfo).Url64Decode();
-						requestInfo = QueryHelpers.ParseQuery(requestInfo.Right(requestInfo.Length - requestInfo.IndexOf("?")))["x-request"].ToString().Url64Decode();
-					}
-					catch (Exception ex)
-					{
-						requestInfo = null;
-						await context.WriteLogsAsync("Http.StaticFiles", $"Error occurred while parsing parameters => {ex.Message}", ex).ConfigureAwait(false);
-					}
-				}
-				else
-				{
-					requestInfo = context.GetQueryParameter("x-request");
-					if (!string.IsNullOrWhiteSpace(requestInfo))
 						try
 						{
-							requestInfo = requestInfo.Url64Decode();
+							requestInfo = context.GetQueryParameter(requestInfo).Url64Decode();
+							requestInfo = QueryHelpers.ParseQuery(requestInfo.Right(requestInfo.Length - requestInfo.IndexOf("?")))["x-request"].ToString().Url64Decode();
 						}
 						catch (Exception ex)
 						{
 							requestInfo = null;
 							await context.WriteLogsAsync("Http.StaticFiles", $"Error occurred while parsing parameters => {ex.Message}", ex).ConfigureAwait(false);
 						}
-				}
-
-				if (!string.IsNullOrWhiteSpace(requestInfo))
-					try
+					}
+					else
 					{
-						var serviceInfo = JObject.Parse(requestInfo);
-						var serviceObject = await context.CallServiceAsync(new RequestInfo(context.GetSession(), serviceInfo.Get<string>("Service"), serviceInfo.Get<string>("Object"), "GET")
+						requestInfo = context.GetQueryParameter("x-request");
+						if (!string.IsNullOrWhiteSpace(requestInfo))
+							try
+							{
+								requestInfo = requestInfo.Url64Decode();
+							}
+							catch (Exception ex)
+							{
+								requestInfo = null;
+								await context.WriteLogsAsync("Http.StaticFiles", $"Error occurred while parsing parameters => {ex.Message}", ex).ConfigureAwait(false);
+							}
+					}
+
+					if (!string.IsNullOrWhiteSpace(requestInfo))
+						try
 						{
-							Query = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+							var serviceInfo = JObject.Parse(requestInfo);
+							var serviceObject = await context.CallServiceAsync(new RequestInfo(context.GetSession(), serviceInfo.Get<string>("Service"), serviceInfo.Get<string>("Object"), "GET")
+							{
+								Query = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 							{
 								{ "object-identity", serviceInfo.Get<string>("ID") }
 							},
-							CorrelationID = context.GetCorrelationID()
-						}, Global.CancellationTokenSource.Token).ConfigureAwait(false);
+								CorrelationID = context.GetCorrelationID()
+							}, Global.CancellationTokenSource.Token).ConfigureAwait(false);
 
-						map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, string.IsNullOrWhiteSpace(parameter.Attribute) ? parameter.Default ?? "" : serviceObject.Get<string>(parameter.Attribute) ?? parameter.Default ?? "")));
-						if (Global.IsDebugLogEnabled)
-							await context.WriteLogsAsync("Http.StaticFiles", $"Parameters of static HTML file:\r\n\t+ {parameters.Select(parameter => $"{parameter.Item1}: {parameter.Item2}").Join("\r\n\t+ ")}").ConfigureAwait(false);
-					}
-					catch (Exception ex)
-					{
+							map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, string.IsNullOrWhiteSpace(parameter.Attribute) ? parameter.Default ?? "" : serviceObject.Get<string>(parameter.Attribute) ?? parameter.Default ?? "")));
+							if (Global.IsDebugLogEnabled)
+								await context.WriteLogsAsync("Http.StaticFiles", $"Parameters of static HTML file:\r\n\t+ {parameters.Select(parameter => $"{parameter.Item1}: {parameter.Item2}").Join("\r\n\t+ ")}").ConfigureAwait(false);
+						}
+						catch (Exception ex)
+						{
+							map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, parameter.Default ?? "")));
+							await context.WriteLogsAsync("Http.StaticFiles", $"Error occurred while processing parameters => {ex.Message}", ex).ConfigureAwait(false);
+						}
+					else
 						map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, parameter.Default ?? "")));
-						await context.WriteLogsAsync("Http.StaticFiles", $"Error occurred while processing parameters => {ex.Message}", ex).ConfigureAwait(false);
-					}
-				else
-					map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, parameter.Default ?? "")));
 
-				if (parameters.Count > 0)
-				{
-					var html = fileContent.GetString();
-					parameters.ForEach(parameter => html = html.Replace(StringComparison.OrdinalIgnoreCase, "{{" + parameter.Item1 + "}}", parameter.Item2));
-					fileContent = html.ToBytes();
+					if (parameters.Count > 0)
+					{
+						var html = fileContent.GetString();
+						parameters.ForEach(parameter => html = html.Replace(StringComparison.OrdinalIgnoreCase, "{{" + parameter.Item1 + "}}", parameter.Item2));
+						fileContent = html.ToBytes();
+					}
 				}
+
+				// write to response
+				context.SetResponseHeaders((int)HttpStatusCode.OK, headers);
+				await context.WriteAsync(fileContent, Global.CancellationTokenSource.Token).ConfigureAwait(false);
 			}
 
-			// response
-			context.SetResponseHeaders((int)HttpStatusCode.OK, new Dictionary<string, string>
-			{
-				{ "Content-Type", $"{fileInfo.GetMimeType()}; charset=utf-8" },
-				{ "ETag", eTag },
-				{ "Last-Modified", $"{fileInfo.LastWriteTime.ToHttpString()}" },
-				{ "Cache-Control", "public" },
-				{ "Expires", $"{DateTime.Now.AddMinutes(13).ToHttpString()}" },
-				{ "X-Correlation-ID", context.GetCorrelationID() }
-			});
-			await context.WriteAsync(fileContent, Global.CancellationTokenSource.Token).ConfigureAwait(false);
+			// other files
+			else
+				using (var stream = new FileStream(fileInfo.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, AspNetCoreUtilityService.BufferSize, true))
+				{
+					await context.WriteAsync(stream, headers, Global.CancellationTokenSource.Token).ConfigureAwait(false);
+				}
+
 			return fileInfo;
 		}
 		#endregion
