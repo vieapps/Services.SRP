@@ -243,7 +243,7 @@ namespace net.vieapps.Services.SRP
 				if (Global.StaticSegments.Contains(requestUri.GetRequestPathSegments().First()))
 					await context.ProcessStaticFileRequestAsync().ConfigureAwait(false);
 
-				// process request of other ifles
+				// process request of other files
 				else
 					try
 					{
