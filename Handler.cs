@@ -2,6 +2,7 @@
 using System;
 using System.Net;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Diagnostics;
 using System.Threading;
@@ -9,18 +10,12 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Configuration;
 using System.Xml;
-
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.AspNetCore.WebUtilities;
-
 using Microsoft.Extensions.Logging;
-
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using WampSharp.V2.Core.Contracts;
-
 using net.vieapps.Components.Caching;
 using net.vieapps.Components.Security;
 using net.vieapps.Components.Utility;
@@ -30,8 +25,6 @@ namespace net.vieapps.Services.SRP
 {
 	public class Handler
 	{
-		RequestDelegate Next { get; }
-
 		bool RedirectToNoneWWW { get; set; } = true;
 
 		bool RedirectToHTTPS { get; set; } = false;
@@ -48,9 +41,8 @@ namespace net.vieapps.Services.SRP
 
 		internal static Dictionary<string, Map> StaticMaps { get; } = new Dictionary<string, Map>(StringComparer.OrdinalIgnoreCase);
 
-		public Handler(RequestDelegate next)
+		public Handler(RequestDelegate _)
 		{
-			this.Next = next;
 			if (ConfigurationManager.GetSection(UtilityService.GetAppSetting("Section:Maps", "net.vieapps.services.srp.maps")) is AppConfigurationSectionHandler svcConfig)
 			{
 				// global settings
@@ -171,10 +163,11 @@ namespace net.vieapps.Services.SRP
 					context.ShowHttpError(404, $"Not Found [{context.GetUri()}]", "FileNotFoundException", context.GetCorrelationID());
 			}
 
+			//else if (context.Request.Path.Value.IsEquals("/index.html"))
+			//	await this.ProcessForwardRequestAsync(context, "dashboards.vieapps.com").ConfigureAwait(false);
+
 			// other requests
 			else
-			{
-				// process the request
 				try
 				{
 					var requestUri = context.GetRequestUri();
@@ -184,10 +177,8 @@ namespace net.vieapps.Services.SRP
 							await context.WriteLogsAsync("Http.Redirects", $"Redirect to other domain ({requestUri} => {map.RedirectTo + requestUri.PathAndQuery})").ConfigureAwait(false);
 						context.Redirect(new Uri(map.RedirectTo + requestUri.PathAndQuery), true);
 					}
-					else if (Handler.ForwardMaps.Get(requestUri.Host, out map))
-						await this.ProcessForwardRequestAsync(context).ConfigureAwait(false);
 					else
-						await this.ProcessStaticRequestAsync(context).ConfigureAwait(false);
+						await (Handler.ForwardMaps.ContainsKey(requestUri.Host) ? this.ProcessForwardRequestAsync(context) : this.ProcessStaticRequestAsync(context)).ConfigureAwait(false);
 				}
 				catch (Exception ex)
 				{
@@ -200,26 +191,108 @@ namespace net.vieapps.Services.SRP
 					else
 						context.ShowHttpError(statusCode: ex.GetHttpStatusCode(), message: ex.Message, type: ex.GetTypeName(true), correlationID: context.GetCorrelationID(), ex: ex, showStack: Global.IsDebugLogEnabled);
 				}
-
-				// invoke next middleware
-				try
-				{
-					await this.Next.Invoke(context).ConfigureAwait(false);
-				}
-				catch (InvalidOperationException) { }
-				catch (Exception ex)
-				{
-					Global.Logger.LogCritical($"Error occurred while invoking the next middleware: {ex.Message}", ex);
-				}
-			}
 		}
 
 		#region Process forwarding requests
-		async Task ProcessForwardRequestAsync(HttpContext context)
+		async Task ProcessForwardRequestAsync(HttpContext context, string host = null)
 		{
+			if (Global.IsVisitLogEnabled)
+				context.SetItem("PipelineStopwatch", Stopwatch.StartNew());
+
 			var requestUri = context.GetRequestUri();
-			Handler.ForwardMaps.Get(requestUri.Host, out var map);
-			await context.WriteAsync($"Forward to => {new Uri(map.ForwardTo + requestUri.PathAndQuery + (requestUri.PathAndQuery.IndexOf("?") > -1 ? "&" : "?") + map.ForwardTokenName + "=" + map.ForwardTokenValue.UrlEncode())}", Global.CancellationTokenSource.Token).ConfigureAwait(false);
+			Handler.ForwardMaps.Get(host ?? requestUri.Host, out var map);
+
+			var forwardToken = string.IsNullOrWhiteSpace(map.ForwardTokenName) ? "" : $"{map.ForwardTokenName}={map.ForwardTokenValue.UrlEncode()}";
+			var uri = new Uri(map.ForwardTo + requestUri.PathAndQuery + (string.IsNullOrWhiteSpace(forwardToken) ? "" : requestUri.PathAndQuery.IndexOf("?") > -1 ? "&" : "?") + forwardToken);
+
+			var method = context.Request.Method;
+			var userAgent = context.GetUserAgent();
+			var refererURL = context.GetReferUrl();
+
+			if (Global.IsVisitLogEnabled)
+			{
+				var protocol = context.Request.Protocol;
+				var ipAddress = context.Connection.RemoteIpAddress;
+				var visitlog = $"Forwarding request is starting {method} [{requestUri} => {uri}] {protocol}\r\n- IP: {ipAddress}{(string.IsNullOrWhiteSpace(userAgent) ? "" : $"\r\n- Agent: {userAgent}")}{(string.IsNullOrWhiteSpace(refererURL) ? "" : $"\r\n- Referer: {refererURL}")}";
+				if (Global.IsDebugLogEnabled)
+					visitlog += $"\r\n- Headers:\r\n\t{context.Request.Headers.ToString("\r\n\t", kvp => $"{kvp.Key}: {kvp.Value}")}";
+				await context.WriteLogsAsync("Http.Visits", visitlog).ConfigureAwait(false);
+			}
+
+			try
+			{
+				using var cts = CancellationTokenSource.CreateLinkedTokenSource(Global.CancellationToken, context.RequestAborted);
+				var headers = context.Request.Headers.ToDictionary(dictionary =>
+				{
+					dictionary.Remove("Host");
+					dictionary.Remove("Connection");
+				});
+				var cookies = context.Request.Cookies.Select(kvp => new Cookie(kvp.Key, kvp.Value)).ToList();
+				var body = method.IsEquals("POST") || method.IsEquals("PUT") || method.IsEquals("PATCH") ? await context.ReadTextAsync(cts.Token).ConfigureAwait(false) : null;
+
+				var webResponse = await UtilityService.SendHttpRequestAsync(method, $"{uri}{requestUri.Fragment}", headers, cookies, body, 15, cts.Token).ConfigureAwait(false);
+				headers = webResponse.Headers?.ToDictionary(dictionary =>
+				{
+					dictionary.Remove("Server");
+					dictionary.Remove("Connection");
+				});
+
+				using var responseStream = UtilityService.CreateMemoryStream();
+
+				if (webResponse.StatusCode.Equals(HttpStatusCode.OK))
+				{
+					using var webStream = webResponse.GetResponseStream();
+					if (webStream is BrotliStream || webStream is GZipStream || webStream is DeflateStream)
+					{
+						var encoding = webStream is BrotliStream ? "br" : webStream is GZipStream ? "gzip" : "deflate";
+						using var reader = new StreamReader(webStream, true);
+						var text = await reader.ReadToEndAsync(cts.Token).ConfigureAwait(false);
+						responseStream.Write(text.ToBytes(reader.CurrentEncoding).Compress(encoding));
+						headers.Remove("Transfer-Encoding");
+						headers["Content-Encoding"] = encoding;
+						headers["Content-Length"] = responseStream.Length.ToString();
+					}
+					else
+					{
+						using var memoryStream = await webStream.ToMemoryStreamAsync(cts.Token).ConfigureAwait(false);
+						responseStream.Write(memoryStream.ToArraySegment());
+					}
+				}
+
+				context.SetResponseHeaders((int)webResponse.StatusCode, headers);
+				webResponse.Cookies?.ForEach(cookie => context.Response.Cookies.Append(cookie.Name, cookie.Value));
+
+				if (responseStream.Length > 0)
+					await context.Response.Body.WriteAsync(responseStream.ToBytes(), cts.Token).ConfigureAwait(false);
+				await context.Response.CompleteAsync().ConfigureAwait(false);
+
+				if (Global.IsDebugLogEnabled)
+					await context.WriteLogsAsync("Http.Visits", $"Forwarding request is completed\r\n- Status: {webResponse.StatusCode}\r\n- Headers:\r\n\t{headers.ToString("\r\n\t", kvp => $"{kvp.Key}: {kvp.Value}")}").ConfigureAwait(false);
+			}
+			catch (RemoteServerErrorException ex)
+			{
+				var statusCode = ex.InnerException.GetHttpStatusCode();
+				var body = context.GetHttpStatusCodeBody(statusCode, ex.InnerException.Message, ex.GetTypeName(true), context.GetCorrelationID(), ex.GetStack(), Global.IsDebugLogEnabled);
+				if (ex.InnerException is WebException webException && webException.Status.Equals(WebExceptionStatus.ProtocolError))
+				{
+					var webResponse = webException.Response as HttpWebResponse;
+					statusCode = (int)webResponse.StatusCode;
+					body = ex.ResponseBody;
+				}
+				context.SetItem("StatusCode", statusCode);
+				context.SetItem("ContentType", "text/html");
+				context.SetItem("Body", body);
+				context.Response.StatusCode = statusCode;
+			}
+			catch (Exception ex)
+			{
+				context.ShowHttpError(statusCode: ex.GetHttpStatusCode(), message: ex.Message, type: ex.GetTypeName(true), correlationID: context.GetCorrelationID(), ex: ex, showStack: Global.IsDebugLogEnabled);
+			}
+			finally
+			{
+				if (Global.IsVisitLogEnabled)
+					await context.WriteVisitFinishingLogAsync().ConfigureAwait(false);
+			}
 		}
 		#endregion
 
@@ -249,11 +322,11 @@ namespace net.vieapps.Services.SRP
 					{
 						var fileInfo = await this.ProcessFileRequestAsync(context).ConfigureAwait(false);
 						if (fileInfo != null && Global.IsDebugLogEnabled)
-							await context.WriteLogsAsync("Http.StaticFiles", $"Success response ({fileInfo.FullName})").ConfigureAwait(false);
+							await context.WriteLogsAsync("Http.Statics", $"Success response ({fileInfo.FullName})").ConfigureAwait(false);
 					}
 					catch (Exception ex)
 					{
-						await context.WriteLogsAsync("Http.StaticFiles", $"Failure response [{requestUri}]", ex).ConfigureAwait(false);
+						await context.WriteLogsAsync("Http.Statics", $"Failure response [{requestUri}]", ex).ConfigureAwait(false);
 						context.ShowHttpError(ex.GetHttpStatusCode(), ex.Message, ex.GetType().GetTypeName(true), context.GetCorrelationID(), ex, Global.IsDebugLogEnabled);
 					}
 			}
@@ -310,7 +383,7 @@ namespace net.vieapps.Services.SRP
 				{
 					context.SetResponseHeaders((int)HttpStatusCode.NotModified, eTag, lastModifed, "public", context.GetCorrelationID());
 					if (Global.IsDebugLogEnabled)
-						await context.WriteLogsAsync("Http.StaticFiles", $"Success response with status code 304 to reduce traffic ({filePath})").ConfigureAwait(false);
+						await context.WriteLogsAsync("Http.Statics", $"Success response with status code 304 to reduce traffic ({filePath})").ConfigureAwait(false);
 					return fileInfo;
 				}
 			}
@@ -328,11 +401,12 @@ namespace net.vieapps.Services.SRP
 			if (!fileInfo.Exists)
 			{
 				if (Global.IsDebugLogEnabled)
-					await context.WriteLogsAsync("Http.StaticFiles", $"Requested file is not found [{requestUri}] => [{fileInfo.FullName}]").ConfigureAwait(false);
+					await context.WriteLogsAsync("Http.Statics", $"Requested file is not found [{requestUri}] => [{fileInfo.FullName}]").ConfigureAwait(false);
 				throw new FileNotFoundException($"Not Found [{requestUri}]");
 			}
 
-			// prepare the responsne
+			// prepare
+			using var cts = CancellationTokenSource.CreateLinkedTokenSource(Global.CancellationToken, context.RequestAborted);
 			var mimeType = fileInfo.GetMimeType();
 			var headers = new Dictionary<string, string>
 			{
@@ -348,7 +422,7 @@ namespace net.vieapps.Services.SRP
 			if (mimeType.IsStartsWith("text/") || fileInfo.Extension.IsStartsWith(".json") || fileInfo.Extension.IsStartsWith(".js"))
 			{
 				// get file content
-				var fileContent = await Global.GetStaticFileContentAsync(fileInfo).ConfigureAwait(false);
+				var fileContent = await Global.GetStaticFileContentAsync(fileInfo, cts.Token).ConfigureAwait(false);
 
 				// prepare social tags
 				if (fileInfo.Extension.IsStartsWith(".htm") && map.Parameters.Count > 0)
@@ -366,7 +440,7 @@ namespace net.vieapps.Services.SRP
 						catch (Exception ex)
 						{
 							requestInfo = null;
-							await context.WriteLogsAsync("Http.StaticFiles", $"Error occurred while parsing parameters => {ex.Message}", ex).ConfigureAwait(false);
+							await context.WriteLogsAsync("Http.Statics", $"Error occurred while parsing parameters => {ex.Message}", ex).ConfigureAwait(false);
 						}
 					}
 					else
@@ -380,7 +454,7 @@ namespace net.vieapps.Services.SRP
 							catch (Exception ex)
 							{
 								requestInfo = null;
-								await context.WriteLogsAsync("Http.StaticFiles", $"Error occurred while parsing parameters => {ex.Message}", ex).ConfigureAwait(false);
+								await context.WriteLogsAsync("Http.Statics", $"Error occurred while parsing parameters => {ex.Message}", ex).ConfigureAwait(false);
 							}
 					}
 
@@ -391,20 +465,20 @@ namespace net.vieapps.Services.SRP
 							var serviceObject = await context.CallServiceAsync(new RequestInfo(context.GetSession(), serviceInfo.Get<string>("Service"), serviceInfo.Get<string>("Object"), "GET")
 							{
 								Query = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-							{
-								{ "object-identity", serviceInfo.Get<string>("ID") }
-							},
+								{
+									{ "object-identity", serviceInfo.Get<string>("ID") }
+								},
 								CorrelationID = context.GetCorrelationID()
-							}, Global.CancellationTokenSource.Token).ConfigureAwait(false);
+							}, cts.Token).ConfigureAwait(false);
 
 							map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, string.IsNullOrWhiteSpace(parameter.Attribute) ? parameter.Default ?? "" : serviceObject.Get<string>(parameter.Attribute) ?? parameter.Default ?? "")));
 							if (Global.IsDebugLogEnabled)
-								await context.WriteLogsAsync("Http.StaticFiles", $"Parameters of static HTML file:\r\n\t+ {parameters.Select(parameter => $"{parameter.Item1}: {parameter.Item2}").Join("\r\n\t+ ")}").ConfigureAwait(false);
+								await context.WriteLogsAsync("Http.Statics", $"Parameters of static HTML file:\r\n\t+ {parameters.Select(parameter => $"{parameter.Item1}: {parameter.Item2}").Join("\r\n\t+ ")}").ConfigureAwait(false);
 						}
 						catch (Exception ex)
 						{
 							map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, parameter.Default ?? "")));
-							await context.WriteLogsAsync("Http.StaticFiles", $"Error occurred while processing parameters => {ex.Message}", ex).ConfigureAwait(false);
+							await context.WriteLogsAsync("Http.Statics", $"Error occurred while processing parameters => {ex.Message}", ex).ConfigureAwait(false);
 						}
 					else
 						map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, parameter.Default ?? "")));
@@ -417,17 +491,34 @@ namespace net.vieapps.Services.SRP
 					}
 				}
 
+				// compress
+				var encoding = context.Request.Headers["Accept-Encoding"].ToString();
+				if (encoding.IsContains("br") || encoding.IsContains("*"))
+					encoding = "br";
+				else if (encoding.IsContains("gzip"))
+					encoding = "gzip";
+				else if (encoding.IsContains("deflate"))
+					encoding = "deflate";
+				else
+					encoding = null;
+
+				if (!string.IsNullOrWhiteSpace(encoding))
+				{
+					headers["Content-Encoding"] = encoding;
+					fileContent = fileContent.Compress(encoding);
+				}
+
 				// write to response
 				context.SetResponseHeaders((int)HttpStatusCode.OK, headers);
-				await context.WriteAsync(fileContent, Global.CancellationTokenSource.Token).ConfigureAwait(false);
+				await context.WriteAsync(fileContent, cts.Token).ConfigureAwait(false);
 			}
 
 			// other files
 			else
-				using (var stream = new FileStream(fileInfo.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, AspNetCoreUtilityService.BufferSize, true))
-				{
-					await context.WriteAsync(stream, headers, Global.CancellationTokenSource.Token).ConfigureAwait(false);
-				}
+			{
+				using var stream = new FileStream(fileInfo.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, AspNetCoreUtilityService.BufferSize, true);
+				await context.WriteAsync(stream, headers, null, cts.Token).ConfigureAwait(false);
+			}
 
 			return fileInfo;
 		}
