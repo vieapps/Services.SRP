@@ -29,13 +29,20 @@ namespace net.vieapps.Services.SRP
 
 		LogLevel LogLevel => this.Configuration.GetAppSetting("Logging/LogLevel/Default", UtilityService.GetAppSetting("Logs:Level", "Information")).TryToEnum(out LogLevel logLevel) ? logLevel : LogLevel.Information;
 
+		bool IsCacheEnabled { get; } = !"true".IsEquals(UtilityService.GetAppSetting("Cache:Disabled"));
+
+		bool IsRouterEnabled { get; } = !"true".IsEquals(UtilityService.GetAppSetting("Router:Disabled"));
+
 		public void ConfigureServices(IServiceCollection services)
 		{
 			// mandatory services
 			services
-				.AddLogging(builder => builder.SetMinimumLevel(this.LogLevel))
-				.AddCache(options => this.Configuration.GetSection("Cache").Bind(options))
-				.AddHttpContextAccessor();
+				.AddHttpContextAccessor()
+				.AddResponseCompression(options => options.EnableForHttps = true)
+				.AddLogging(builder => builder.SetMinimumLevel(this.LogLevel));
+
+			if (this.IsCacheEnabled)
+				services.AddCache(options => this.Configuration.GetSection("Cache").Bind(options));
 
 			// config authentication with proxy/load balancer
 			if (Global.UseIISIntegration)
@@ -112,13 +119,16 @@ namespace net.vieapps.Services.SRP
 			appBuilder
 				.UseForwardedHeaders(Global.GetForwardedHeadersOptions())
 				.UseStatusCodeHandler()
-				.UseCache()
-				.UseCookiePolicy()
-				.UseMiddleware<Handler>();
+				.UseResponseCompression()
+				.UseCookiePolicy();
+
+			if (this.IsCacheEnabled)
+				appBuilder.UseCache();
+
+			appBuilder.UseMiddleware<Handler>();
 
 			// connect to API Gateway Router
-			var connectToRouter = "true".IsEquals(UtilityService.GetAppSetting("Router:Disabled")) ? false : true;
-			if (connectToRouter)
+			if (this.IsRouterEnabled)
 				Handler.Connect();
 
 			// on started
@@ -138,7 +148,7 @@ namespace net.vieapps.Services.SRP
 				Global.Logger.LogInformation($"Show debugs: {Global.IsDebugLogEnabled} - Show results: {Global.IsDebugResultsEnabled} - Show stacks: {Global.IsDebugStacksEnabled}");
 
 				stopwatch.Stop();
-				Global.Logger.LogInformation($"The {Global.ServiceName} HTTP service is started - PID: {Process.GetCurrentProcess().Id} - Execution times: {stopwatch.GetElapsedTimes()}");
+				Global.Logger.LogInformation($"The {Global.ServiceName} HTTP service is started - PID: {Environment.ProcessId} - Execution times: {stopwatch.GetElapsedTimes()}");
 				Global.Logger = loggerFactory.CreateLogger<Handler>();
 			});
 
@@ -148,7 +158,7 @@ namespace net.vieapps.Services.SRP
 			// on stopped
 			appLifetime.ApplicationStopped.Register(() =>
 			{
-				if (connectToRouter)
+				if (this.IsRouterEnabled)
 					Handler.Disconnect();
 				Global.CancellationTokenSource.Cancel();
 				Global.CancellationTokenSource.Dispose();

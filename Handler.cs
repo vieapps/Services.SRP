@@ -15,7 +15,6 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json.Linq;
-using WampSharp.V2.Core.Contracts;
 using net.vieapps.Components.Caching;
 using net.vieapps.Components.Security;
 using net.vieapps.Components.Utility;
@@ -25,6 +24,8 @@ namespace net.vieapps.Services.SRP
 {
 	public class Handler
 	{
+
+		#region Properties
 		bool RedirectToNoneWWW { get; set; } = true;
 
 		bool RedirectToHTTPS { get; set; } = false;
@@ -40,6 +41,7 @@ namespace net.vieapps.Services.SRP
 		internal static Dictionary<string, Map> ForwardMaps { get; } = new Dictionary<string, Map>(StringComparer.OrdinalIgnoreCase);
 
 		internal static Dictionary<string, Map> StaticMaps { get; } = new Dictionary<string, Map>(StringComparer.OrdinalIgnoreCase);
+		#endregion
 
 		public Handler(RequestDelegate _)
 		{
@@ -163,60 +165,39 @@ namespace net.vieapps.Services.SRP
 					context.ShowHttpError(404, $"Not Found [{context.GetUri()}]", "FileNotFoundException", context.GetCorrelationID());
 			}
 
-			//else if (context.Request.Path.Value.IsEquals("/index.html"))
-			//	await this.ProcessForwardRequestAsync(context, "dashboards.vieapps.com").ConfigureAwait(false);
-
 			// other requests
 			else
-				try
+			{
+				var requestUri = context.GetRequestUri();
+				if (Handler.RedirectMaps.Get(requestUri.Host, out var map))
 				{
-					var requestUri = context.GetRequestUri();
-					if (Handler.RedirectMaps.Get(requestUri.Host, out var map))
-					{
-						if (Global.IsDebugLogEnabled)
-							await context.WriteLogsAsync("Http.Redirects", $"Redirect to other domain ({requestUri} => {map.RedirectTo + requestUri.PathAndQuery})").ConfigureAwait(false);
-						context.Redirect(new Uri(map.RedirectTo + requestUri.PathAndQuery), true);
-					}
-					else
-						await (Handler.ForwardMaps.ContainsKey(requestUri.Host) ? this.ProcessForwardRequestAsync(context) : this.ProcessStaticRequestAsync(context)).ConfigureAwait(false);
+					if (Global.IsDebugLogEnabled)
+						await context.WriteLogsAsync("Http.Redirects", $"Redirect to other domain ({requestUri} => {map.RedirectTo + requestUri.PathAndQuery})").ConfigureAwait(false);
+					context.Redirect(new Uri(map.RedirectTo + requestUri.PathAndQuery), true);
 				}
-				catch (Exception ex)
-				{
-					await context.WriteLogsAsync("Http.Errors", $"Error occurred while processing [{context.GetRequestUri()}] => {ex.Message}", ex).ConfigureAwait(false);
-					if (ex is WampException)
-					{
-						var wampException = (ex as WampException).GetDetails();
-						context.ShowHttpError(statusCode: wampException.Item1, message: wampException.Item2, type: wampException.Item3, correlationID: context.GetCorrelationID(), stack: wampException.Item4 + "\r\n\t" + ex.StackTrace, showStack: Global.IsDebugLogEnabled);
-					}
-					else
-						context.ShowHttpError(statusCode: ex.GetHttpStatusCode(), message: ex.Message, type: ex.GetTypeName(true), correlationID: context.GetCorrelationID(), ex: ex, showStack: Global.IsDebugLogEnabled);
-				}
+				else
+					await (Handler.ForwardMaps.ContainsKey(requestUri.Host) ? this.ProcessForwardRequestAsync(context) : this.ProcessStaticRequestAsync(context)).ConfigureAwait(false);
+			}
 		}
 
 		#region Process forwarding requests
-		async Task ProcessForwardRequestAsync(HttpContext context, string host = null)
+		async Task ProcessForwardRequestAsync(HttpContext context)
 		{
 			if (Global.IsVisitLogEnabled)
 				context.SetItem("PipelineStopwatch", Stopwatch.StartNew());
 
 			var requestUri = context.GetRequestUri();
-			Handler.ForwardMaps.Get(host ?? requestUri.Host, out var map);
+			Handler.ForwardMaps.Get(requestUri.Host, out var map);
 
-			var forwardToken = string.IsNullOrWhiteSpace(map.ForwardTokenName) ? "" : $"{map.ForwardTokenName}={map.ForwardTokenValue.UrlEncode()}";
-			var uri = new Uri(map.ForwardTo + requestUri.PathAndQuery + (string.IsNullOrWhiteSpace(forwardToken) ? "" : requestUri.PathAndQuery.IndexOf("?") > -1 ? "&" : "?") + forwardToken);
-
+			var forwardingToken = string.IsNullOrWhiteSpace(map.ForwardTokenName) ? "" : $"{map.ForwardTokenName}={map.ForwardTokenValue.UrlEncode()}";
+			var uri = new Uri(map.ForwardTo + requestUri.PathAndQuery + (string.IsNullOrWhiteSpace(forwardingToken) ? "" : (requestUri.PathAndQuery.IndexOf("?") > -1 ? "&" : "?") + forwardingToken) + requestUri.Fragment);
 			var method = context.Request.Method;
-			var userAgent = context.GetUserAgent();
-			var refererURL = context.GetReferUrl();
 
 			if (Global.IsVisitLogEnabled)
 			{
-				var protocol = context.Request.Protocol;
-				var ipAddress = context.Connection.RemoteIpAddress;
-				var visitlog = $"Forwarding request is starting {method} [{requestUri} => {uri}] {protocol}\r\n- IP: {ipAddress}{(string.IsNullOrWhiteSpace(userAgent) ? "" : $"\r\n- Agent: {userAgent}")}{(string.IsNullOrWhiteSpace(refererURL) ? "" : $"\r\n- Referer: {refererURL}")}";
-				if (Global.IsDebugLogEnabled)
-					visitlog += $"\r\n- Headers:\r\n\t{context.Request.Headers.ToString("\r\n\t", kvp => $"{kvp.Key}: {kvp.Value}")}";
-				await context.WriteLogsAsync("Http.Visits", visitlog).ConfigureAwait(false);
+				var userAgent = context.GetUserAgent();
+				var referer = context.GetReferUrl();
+				await context.WriteLogsAsync("Http.Visits", $"Forwarding request is starting [{method}: {requestUri} => {uri}] {context.Request.Protocol}\r\n- IP: {context.Connection.RemoteIpAddress}{(string.IsNullOrWhiteSpace(userAgent) ? "" : $"\r\n- Agent: {userAgent}")}{(string.IsNullOrWhiteSpace(referer) ? "" : $"\r\n- Referer: {referer}")}" + (Global.IsDebugLogEnabled ? $"\r\n- Headers:\r\n\t{context.Request.Headers.ToString("\r\n\t", kvp => $"{kvp.Key}: {kvp.Value}")}" : "")).ConfigureAwait(false);
 			}
 
 			try
@@ -230,56 +211,65 @@ namespace net.vieapps.Services.SRP
 				var cookies = context.Request.Cookies.Select(kvp => new Cookie(kvp.Key, kvp.Value)).ToList();
 				var body = method.IsEquals("POST") || method.IsEquals("PUT") || method.IsEquals("PATCH") ? await context.ReadTextAsync(cts.Token).ConfigureAwait(false) : null;
 
-				var webResponse = await UtilityService.SendHttpRequestAsync(method, $"{uri}{requestUri.Fragment}", headers, cookies, body, 15, cts.Token).ConfigureAwait(false);
-				headers = webResponse.Headers?.ToDictionary(dictionary =>
+				var webResponse = await uri.SendHttpRequestAsync(method, headers, cookies, body, 15, null, null, cts.Token).ConfigureAwait(false);
+				var statusCode = webResponse.StatusCode;
+
+				using var stream = webResponse.GetResponseStream();
+				var isEncodingStream = stream is BrotliStream || stream is GZipStream || stream is DeflateStream || $"{stream.GetType()}".IsEndsWith("EncodingReadStream");
+
+				headers = webResponse.Headers.ToDictionary(dictionary =>
 				{
-					dictionary.Remove("Server");
+					dictionary["Server"] = AspNetCoreUtilityService.ServerName;
 					dictionary.Remove("Connection");
+					if (isEncodingStream)
+						dictionary.Remove("Transfer-Encoding");
 				});
 
-				using var responseStream = UtilityService.CreateMemoryStream();
+				context.SetResponseHeaders((int)statusCode, headers);
+				context.AppendCookies(webResponse.Cookies?.ToList());
 
-				if (webResponse.StatusCode.Equals(HttpStatusCode.OK))
+				if (isEncodingStream)
 				{
-					using var webStream = webResponse.GetResponseStream();
-					if (webStream is BrotliStream || webStream is GZipStream || webStream is DeflateStream)
+					var content = await stream.ReadAllAsync(cts.Token).ConfigureAwait(false);
+					var buffer = content.ToBytes();
+					await context.Response.Body.WriteAsync(buffer.AsMemory(0, buffer.Length), cts.Token).ConfigureAwait(false);
+				}
+				else
+				{
+					var buffer = new byte[AspNetCoreUtilityService.BufferSize];
+					var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cts.Token).ConfigureAwait(false);
+					while (read > 0)
 					{
-						var encoding = webStream is BrotliStream ? "br" : webStream is GZipStream ? "gzip" : "deflate";
-						using var reader = new StreamReader(webStream, true);
-						var text = await reader.ReadToEndAsync(cts.Token).ConfigureAwait(false);
-						responseStream.Write(text.ToBytes(reader.CurrentEncoding).Compress(encoding));
-						headers.Remove("Transfer-Encoding");
-						headers["Content-Encoding"] = encoding;
-						headers["Content-Length"] = responseStream.Length.ToString();
-					}
-					else
-					{
-						using var memoryStream = await webStream.ToMemoryStreamAsync(cts.Token).ConfigureAwait(false);
-						responseStream.Write(memoryStream.ToArraySegment());
+						await context.Response.Body.WriteAsync(buffer.AsMemory(0, read), cts.Token).ConfigureAwait(false);
+						await context.FlushAsync(cts.Token).ConfigureAwait(false);
+						read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cts.Token).ConfigureAwait(false);
 					}
 				}
 
-				context.SetResponseHeaders((int)webResponse.StatusCode, headers);
-				webResponse.Cookies?.ForEach(cookie => context.Response.Cookies.Append(cookie.Name, cookie.Value));
-
-				if (responseStream.Length > 0)
-					await context.Response.Body.WriteAsync(responseStream.ToBytes(), cts.Token).ConfigureAwait(false);
-				await context.Response.CompleteAsync().ConfigureAwait(false);
-
 				if (Global.IsDebugLogEnabled)
-					await context.WriteLogsAsync("Http.Visits", $"Forwarding request is completed\r\n- Status: {webResponse.StatusCode}\r\n- Headers:\r\n\t{headers.ToString("\r\n\t", kvp => $"{kvp.Key}: {kvp.Value}")}").ConfigureAwait(false);
+					await context.WriteLogsAsync("Http.Visits", $"Forwarding request is completed\r\n- Response: {stream.GetType()}\r\n- Status: {statusCode}\r\n- Headers:\r\n\t{headers.ToString("\r\n\t", kvp => $"{kvp.Key}: {kvp.Value}")}").ConfigureAwait(false);
 			}
 			catch (RemoteServerErrorException ex)
 			{
-				var statusCode = ex.InnerException.GetHttpStatusCode();
-				var body = context.GetHttpStatusCodeBody(statusCode, ex.InnerException.Message, ex.GetTypeName(true), context.GetCorrelationID(), ex.GetStack(), Global.IsDebugLogEnabled);
-				if (ex.InnerException is WebException webException && webException.Status.Equals(WebExceptionStatus.ProtocolError))
+				var statusCode = (int)HttpStatusCode.InternalServerError;
+				var body = "";
+				var headers = new Dictionary<string, string>();
+				if (ex.InnerException is WebException webException)
 				{
 					var webResponse = webException.Response as HttpWebResponse;
 					statusCode = (int)webResponse.StatusCode;
-					body = ex.ResponseBody;
+					headers = webResponse.Headers.ToDictionary(dictionary => dictionary.Remove("Connection"));
+					body = webException.Status.Equals(WebExceptionStatus.ProtocolError) ? ex.ResponseBody : context.GetHttpStatusCodeBody(statusCode, webException.Message, webException.GetTypeName(true), context.GetCorrelationID(), webException.GetStack(), Global.IsDebugLogEnabled);
+					if (Global.IsDebugLogEnabled && (statusCode == 301 || statusCode == 302 || statusCode == 304))
+						await context.WriteLogsAsync("Http.Visits", $"Forwarding request is completed\r\n- Status: {statusCode} {webResponse.StatusCode}\r\n- Headers:\r\n\t{headers.ToString("\r\n\t", kvp => $"{kvp.Key}: {kvp.Value}")}").ConfigureAwait(false);
+				}
+				else
+				{
+					statusCode = ex.InnerException.GetHttpStatusCode();
+					body = context.GetHttpStatusCodeBody(statusCode, ex.InnerException.Message, ex.GetTypeName(true), context.GetCorrelationID(), ex.GetStack(), Global.IsDebugLogEnabled);
 				}
 				context.SetItem("StatusCode", statusCode);
+				context.SetItem("Headers", headers);
 				context.SetItem("ContentType", "text/html");
 				context.SetItem("Body", body);
 				context.Response.StatusCode = statusCode;
@@ -314,7 +304,7 @@ namespace net.vieapps.Services.SRP
 			{
 				// process request of static files
 				if (Global.StaticSegments.Contains(requestUri.GetRequestPathSegments().First()))
-					await context.ProcessStaticFileRequestAsync().ConfigureAwait(false);
+					await context.ProcessStaticFileRequestAsync(context.GetContentEncoding()).ConfigureAwait(false);
 
 				// process request of other files
 				else
@@ -361,7 +351,7 @@ namespace net.vieapps.Services.SRP
 			filePath += filePath.EndsWith(Path.DirectorySeparatorChar) ? this.DefaultFile : "";
 
 			// check to reduce traffic
-			var eTag = "SRP#" + $"{requestUri}".ToLower().GenerateUUID();
+			var eTag = "srp#" + $"{requestUri}".ToLower().GenerateUUID();
 			if (eTag.IsEquals(context.GetHeaderParameter("If-None-Match")))
 			{
 				var isNotModified = true;
@@ -422,7 +412,7 @@ namespace net.vieapps.Services.SRP
 			if (mimeType.IsStartsWith("text/") || fileInfo.Extension.IsStartsWith(".json") || fileInfo.Extension.IsStartsWith(".js"))
 			{
 				// get file content
-				var fileContent = await Global.GetStaticFileContentAsync(fileInfo, cts.Token).ConfigureAwait(false);
+				var content = await Global.GetStaticFileContentAsync(fileInfo, cts.Token).ConfigureAwait(false);
 
 				// prepare social tags
 				if (fileInfo.Extension.IsStartsWith(".htm") && map.Parameters.Count > 0)
@@ -485,39 +475,21 @@ namespace net.vieapps.Services.SRP
 
 					if (parameters.Count > 0)
 					{
-						var html = fileContent.GetString();
+						var html = content.GetString();
 						parameters.ForEach(parameter => html = html.Replace(StringComparison.OrdinalIgnoreCase, "{{" + parameter.Item1 + "}}", parameter.Item2));
-						fileContent = html.ToBytes();
+						content = html.ToBytes();
 					}
 				}
 
-				// compress
-				var encoding = context.Request.Headers["Accept-Encoding"].ToString();
-				if (encoding.IsContains("br") || encoding.IsContains("*"))
-					encoding = "br";
-				else if (encoding.IsContains("gzip"))
-					encoding = "gzip";
-				else if (encoding.IsContains("deflate"))
-					encoding = "deflate";
-				else
-					encoding = null;
-
-				if (!string.IsNullOrWhiteSpace(encoding))
-				{
-					headers["Content-Encoding"] = encoding;
-					fileContent = fileContent.Compress(encoding);
-				}
-
 				// write to response
-				context.SetResponseHeaders((int)HttpStatusCode.OK, headers);
-				await context.WriteAsync(fileContent, cts.Token).ConfigureAwait(false);
+				await context.WriteAsync(content, headers, cts.Token).ConfigureAwait(false);
 			}
 
 			// other files
 			else
 			{
 				using var stream = new FileStream(fileInfo.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, AspNetCoreUtilityService.BufferSize, true);
-				await context.WriteAsync(stream, headers, null, cts.Token).ConfigureAwait(false);
+				await context.WriteAsync(stream, headers, cts.Token).ConfigureAwait(false);
 			}
 
 			return fileInfo;
@@ -635,7 +607,6 @@ namespace net.vieapps.Services.SRP
 	}
 
 	#region Map & Parameter
-	[Serializable]
 	public class Map
 	{
 		public Map() { }
@@ -661,7 +632,6 @@ namespace net.vieapps.Services.SRP
 		public List<MapParameter> Parameters { get; } = new List<MapParameter>();
 	}
 
-	[Serializable]
 	public class MapParameter
 	{
 		public MapParameter() { }
@@ -676,11 +646,7 @@ namespace net.vieapps.Services.SRP
 	internal static class HandlerExtensions
 	{
 		public static bool Get(this Dictionary<string, Map> maps, string host, out Map map)
-		   => maps.TryGetValue(host, out map)
-			   ? true
-			   : host.IsStartsWith("www.")
-				   ? maps.TryGetValue(host.Right(host.Length - 4), out map)
-				   : false;
+		   => maps.TryGetValue(host, out map) || (host.IsStartsWith("www.") && maps.TryGetValue(host.Right(host.Length - 4), out map));
 	}
 	#endregion
 
