@@ -36,6 +36,8 @@ namespace net.vieapps.Services.SRP
 
 		string LoadBalancingHealthCheckUrl { get; } = UtilityService.GetAppSetting("HealthCheckUrl", "/load-balancing-health-check");
 
+		int ForwardingTimeout { get; } = Int32.TryParse(UtilityService.GetAppSetting("SRP:ForwardingTimeout", "90"), out var timeout) && timeout > 0 ? timeout : 90;
+
 		internal static Dictionary<string, Map> RedirectMaps { get; } = new Dictionary<string, Map>(StringComparer.OrdinalIgnoreCase);
 
 		internal static Dictionary<string, Map> ForwardMaps { get; } = new Dictionary<string, Map>(StringComparer.OrdinalIgnoreCase);
@@ -182,7 +184,7 @@ namespace net.vieapps.Services.SRP
 						await context.WriteAsync(maps, cts.Token).ConfigureAwait(false);
 					}
 					else
-						context.ShowHttpError(404, $"Not Found [{context.GetUri()}]", "FileNotFoundException", context.GetCorrelationID());
+						context.ShowError(404, $"Not Found [{context.GetUri()}]", "FileNotFoundException", context.GetCorrelationID());
 				}
 
 				// other requests
@@ -235,7 +237,7 @@ namespace net.vieapps.Services.SRP
 				using var cts = CancellationTokenSource.CreateLinkedTokenSource(Global.CancellationToken, context.RequestAborted);
 				var body = method.IsEquals("POST") || method.IsEquals("PUT") || method.IsEquals("PATCH") ? await context.ReadTextAsync(cts.Token).ConfigureAwait(false) : null;
 
-				var webResponse = await uri.SendHttpRequestAsync(method, headers, body, 90, cts.Token).ConfigureAwait(false);
+				using var webResponse = await uri.SendHttpRequestAsync(method, headers, body, this.ForwardingTimeout, cts.Token).ConfigureAwait(false);
 				var statusCode = webResponse.StatusCode;
 
 				using var stream = webResponse.GetResponseStream();
@@ -275,32 +277,16 @@ namespace net.vieapps.Services.SRP
 			}
 			catch (RemoteServerErrorException ex)
 			{
-				var statusCode = (int)HttpStatusCode.InternalServerError;
-				var body = "";
-				headers = new Dictionary<string, string>();
-				if (ex.InnerException is WebException webException)
-				{
-					var webResponse = webException.Response as HttpWebResponse;
-					statusCode = (int)webResponse.StatusCode;
-					headers = webResponse.Headers.ToDictionary(dictionary => dictionary.Remove("Connection"));
-					body = webException.Status.Equals(WebExceptionStatus.ProtocolError) ? ex.ResponseBody : context.GetHttpStatusCodeBody(statusCode, webException.Message, webException.GetTypeName(true), context.GetCorrelationID(), webException.GetStack(), Global.IsDebugLogEnabled);
-					if (Global.IsDebugLogEnabled && (statusCode == 301 || statusCode == 302 || statusCode == 304))
-						await context.WriteLogsAsync("Http.Visits", $"Forwarding request is completed\r\n- Status: {statusCode} {webResponse.StatusCode}\r\n- Headers:\r\n\t{headers.ToString("\r\n\t", kvp => $"{kvp.Key}: {kvp.Value}")}").ConfigureAwait(false);
-				}
-				else
-				{
-					statusCode = ex.InnerException.GetHttpStatusCode();
-					body = context.GetHttpStatusCodeBody(statusCode, ex.InnerException.Message, ex.GetTypeName(true), context.GetCorrelationID(), ex.GetStack(), Global.IsDebugLogEnabled);
-				}
-				context.SetItem("StatusCode", statusCode);
-				context.SetItem("Headers", headers);
-				context.SetItem("ContentType", "text/html");
-				context.SetItem("Body", body);
-				context.Response.StatusCode = statusCode;
+				var statusCode = ex.ResponseCode;
+				headers = ex.ResponseHeaders.Where(kvp=> !kvp.Key.IsEquals("Connection")).ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+				var body = ex.ResponseStatus == WebExceptionStatus.ProtocolError
+					? ex.ResponseBody
+					: context.GetHttpStatusCodeBody((int)statusCode, ex.InnerException.Message, ex.GetTypeName(true), context.GetCorrelationID(), ex.GetStack(), Global.IsDebugLogEnabled);
+				context.ShowError((int)statusCode, body, headers);
 			}
 			catch (Exception ex)
 			{
-				context.ShowHttpError(ex.GetHttpStatusCode(), ex.Message, ex.GetTypeName(true), context.GetCorrelationID(), ex, Global.IsDebugLogEnabled);
+				context.ShowError(ex.GetHttpStatusCode(), ex.Message, ex.GetTypeName(true), context.GetCorrelationID(), ex, Global.IsDebugLogEnabled);
 			}
 			finally
 			{
@@ -322,7 +308,7 @@ namespace net.vieapps.Services.SRP
 
 			// only allow GET method
 			if (!context.Request.Method.IsEquals("GET"))
-				context.ShowHttpError((int)HttpStatusCode.MethodNotAllowed, $"Method {context.Request.Method} is not allowed", "MethodNotAllowedException", context.GetCorrelationID());
+				context.ShowError((int)HttpStatusCode.MethodNotAllowed, $"Method {context.Request.Method} is not allowed", "MethodNotAllowedException", context.GetCorrelationID());
 
 			else
 			{
@@ -341,7 +327,7 @@ namespace net.vieapps.Services.SRP
 					catch (Exception ex)
 					{
 						await context.WriteLogsAsync("Http.Statics", $"Failure response [{requestUri}]", ex).ConfigureAwait(false);
-						context.ShowHttpError(ex.GetHttpStatusCode(), ex.Message, ex.GetType().GetTypeName(true), context.GetCorrelationID(), ex, Global.IsDebugLogEnabled);
+						context.ShowError(ex.GetHttpStatusCode(), ex.Message, ex.GetType().GetTypeName(true), context.GetCorrelationID(), ex, Global.IsDebugLogEnabled);
 					}
 			}
 
@@ -539,10 +525,10 @@ namespace net.vieapps.Services.SRP
 								}
 								catch (Exception ex)
 								{
-									await Global.WriteLogsAsync(Global.Logger, "Http.WebSockets", $"Error occurred while processing an inter-communicate message: {ex.Message} => {message?.ToJson().ToString(Global.IsDebugLogEnabled ? Newtonsoft.Json.Formatting.Indented : Newtonsoft.Json.Formatting.None)}", ex, Global.ServiceName).ConfigureAwait(false);
+									await Global.WriteLogsAsync(Global.Logger, "Http.Updates", $"Error occurred while processing an inter-communicate message: {ex.Message} => {message?.ToJson().ToString(Global.IsDebugLogEnabled ? Newtonsoft.Json.Formatting.Indented : Newtonsoft.Json.Formatting.None)}", ex, Global.ServiceName).ConfigureAwait(false);
 								}
 							},
-							async exception => await Global.WriteLogsAsync(Global.Logger, "Http.WebSockets", $"Error occurred while fetching an inter-communicate message: {exception.Message}", exception).ConfigureAwait(false)
+							async exception => await Global.WriteLogsAsync(Global.Logger, "Http.Updates", $"Error occurred while fetching an inter-communicate message: {exception.Message}", exception).ConfigureAwait(false)
 						);
 					Global.SecondaryInterCommunicateMessageUpdater?.Dispose();
 					Global.SecondaryInterCommunicateMessageUpdater = Router.IncomingChannel.RealmProxy.Services
@@ -556,13 +542,13 @@ namespace net.vieapps.Services.SRP
 								}
 								catch (Exception ex)
 								{
-									await Global.WriteLogsAsync(Global.Logger, "Http.WebSockets", $"Error occurred while processing an inter-communicate message of API Gateway: {ex.Message} => {message?.ToJson().ToString(Global.IsDebugLogEnabled ? Newtonsoft.Json.Formatting.Indented : Newtonsoft.Json.Formatting.None)}", ex, Global.ServiceName).ConfigureAwait(false);
+									await Global.WriteLogsAsync(Global.Logger, "Http.Updates", $"Error occurred while processing an inter-communicate message of API Gateway: {ex.Message} => {message?.ToJson().ToString(Global.IsDebugLogEnabled ? Newtonsoft.Json.Formatting.Indented : Newtonsoft.Json.Formatting.None)}", ex, Global.ServiceName).ConfigureAwait(false);
 								}
 							},
-							async exception => await Global.WriteLogsAsync(Global.Logger, "Http.WebSockets", $"Error occurred while fetching an inter-communicate message of API Gateway: {exception.Message}", exception).ConfigureAwait(false)
+							async exception => await Global.WriteLogsAsync(Global.Logger, "Http.Updates", $"Error occurred while fetching an inter-communicate message of API Gateway: {exception.Message}", exception).ConfigureAwait(false)
 						);
 				},
-				(sender, arguments) => Task.Run(async () => await Global.RegisterServiceAsync("Http.WebSockets").ConfigureAwait(false)).ContinueWith(async _ =>
+				(sender, arguments) => Task.Run(async () => await Global.RegisterServiceAsync().ConfigureAwait(false)).ContinueWith(async _ =>
 				{
 					while (Router.IncomingChannel == null)
 						await Task.Delay(UtilityService.GetRandomNumber(234, 567), Global.CancellationTokenSource.Token).ConfigureAwait(false);
@@ -572,14 +558,14 @@ namespace net.vieapps.Services.SRP
 							Type = "Update#Redirect",
 							Data = kvp.Value.ToJson()
 						})
-						.Select(message => message.PublishAsync(Global.Logger, "Http.WebSockets"))
+						.Select(message => message.PublishAsync(Global.Logger, "Http.Updates"))
 						.Concat(
 							Handler.ForwardMaps.Select(kvp => new CommunicateMessage(Global.ServiceName)
 							{
 								Type = "Update#Forward",
 								Data = kvp.Value.ToJson()
 							})
-							.Select(message => message.PublishAsync(Global.Logger, "Http.WebSockets"))
+							.Select(message => message.PublishAsync(Global.Logger, "Http.Updates"))
 						)
 						.ToList()
 					).ConfigureAwait(false);
@@ -590,12 +576,12 @@ namespace net.vieapps.Services.SRP
 			);
 		}
 
-		internal static void Disconnect(int waitingTimes = 1234)
+		internal static void Disconnect()
 		{
-			Global.UnregisterService("Http.WebSockets", waitingTimes);
+			Global.UnregisterService();
 			Global.PrimaryInterCommunicateMessageUpdater?.Dispose();
 			Global.SecondaryInterCommunicateMessageUpdater?.Dispose();
-			Global.Disconnect(waitingTimes);
+			Global.Disconnect();
 		}
 
 		async static Task ProcessInterCommunicateMessageAsync(CommunicateMessage message)
@@ -607,7 +593,7 @@ namespace net.vieapps.Services.SRP
 				{
 					Handler.RedirectMaps[map.Host] = map;
 					if (Global.IsDebugLogEnabled)
-						await Global.WriteLogsAsync(Global.Logger, "Http.WebSockets", $"Update redirect map successful => {map.ToJson()}", null).ConfigureAwait(false);
+						await Global.WriteLogsAsync(Global.Logger, "Http.Updates", $"Update redirect map successful => {map.ToJson()}", null).ConfigureAwait(false);
 				}
 			}
 			else if ("Update#Forward".IsEquals(message.Type))
@@ -617,14 +603,14 @@ namespace net.vieapps.Services.SRP
 				{
 					Handler.ForwardMaps[map.Host] = map;
 					if (Global.IsDebugLogEnabled)
-						await Global.WriteLogsAsync(Global.Logger, "Http.WebSockets", $"Update forward map successful => {map.ToJson()}", null).ConfigureAwait(false);
+						await Global.WriteLogsAsync(Global.Logger, "Http.Updates", $"Update forward map successful => {map.ToJson()}", null).ConfigureAwait(false);
 				}
 			}
 		}
 
 		static Task ProcessAPIGatewayCommunicateMessageAsync(CommunicateMessage message)
 			=> message.Type.IsEquals("Service#RequestInfo")
-				? Global.SendServiceInfoAsync("Http.WebSockets")
+				? Global.SendServiceInfoAsync()
 				: Task.CompletedTask;
 		#endregion
 
