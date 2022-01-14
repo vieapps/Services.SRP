@@ -85,8 +85,8 @@ namespace net.vieapps.Services.SRP
 							ForwardTokenValue = info.Attributes["forwardTokenValue"]?.Value,
 							Directory = info.Attributes["directory"]?.Value,
 							NotFound = info.Attributes["notFound"]?.Value,
-							RedirectToNoneWWW = !string.IsNullOrWhiteSpace(info.Attributes["redirectToNoneWWW"]?.Value) ? "true".IsEquals(info.Attributes["redirectToNoneWWW"]?.Value) : this.RedirectToNoneWWW,
-							RedirectToHTTPS = !string.IsNullOrWhiteSpace(info.Attributes["redirectToHTTPS"]?.Value) ? "true".IsEquals(info.Attributes["redirectToHTTPS"]?.Value) : this.RedirectToHTTPS
+							RedirectToNoneWWW = string.IsNullOrWhiteSpace(info.Attributes["redirectToNoneWWW"]?.Value) ? this.RedirectToNoneWWW : "true".IsEquals(info.Attributes["redirectToNoneWWW"]?.Value),
+							RedirectToHTTPS = string.IsNullOrWhiteSpace(info.Attributes["redirectToHTTPS"]?.Value) ? this.RedirectToHTTPS : "true".IsEquals(info.Attributes["redirectToHTTPS"].Value)
 						};
 						if (info.SelectNodes("param") is XmlNodeList parameters)
 							parameters.ToList().ForEach(param =>
@@ -206,14 +206,31 @@ namespace net.vieapps.Services.SRP
 		#region Process forwarding requests
 		async Task ProcessForwardRequestAsync(HttpContext context)
 		{
-			if (Global.IsVisitLogEnabled)
-				context.SetItem("PipelineStopwatch", Stopwatch.StartNew());
-
+			// get map info
+			context.SetItem("PipelineStopwatch", Stopwatch.StartNew());
 			var requestUri = context.GetRequestUri();
 			Handler.ForwardMaps.Get(requestUri.Host, out var map);
 			if (map == null)
 				Handler.ForwardMaps.Get("*", out map);
 
+			// redirect
+			var redirectToHttps = (map != null ? map.RedirectToHTTPS : this.RedirectToHTTPS) && !requestUri.Scheme.IsEquals("https");
+			var redirectToNoneWWW = (map != null ? map.RedirectToNoneWWW : this.RedirectToNoneWWW) && requestUri.Host.StartsWith("www.");
+			if (redirectToHttps || redirectToNoneWWW)
+			{
+				var url = $"{requestUri}";
+				url = redirectToHttps ? url.Replace("http://", "https://") : url;
+				url = redirectToNoneWWW ? url.Replace("://www.", "://") : url;
+				if (Global.IsDebugLogEnabled)
+					await context.WriteLogsAsync("Http.Forwards", $"Redirect to HTTPS/None WWW ({requestUri} => {url})");
+				context.Redirect(url, true);
+				return;
+			}
+
+			if (Global.IsVisitLogEnabled)
+				await context.WriteVisitStartingLogAsync().ConfigureAwait(false);
+
+			// prepare
 			var forwardingToken = !string.IsNullOrWhiteSpace(map.ForwardTokenName) && !context.Request.Query.ContainsKey(map.ForwardTokenName) ? $"{map.ForwardTokenName}={map.ForwardTokenValue.UrlEncode()}" : "";
 			var uri = new Uri(map.ForwardTo + requestUri.PathAndQuery + (string.IsNullOrWhiteSpace(forwardingToken) ? "" : $"{(requestUri.PathAndQuery.IndexOf("?") > -1 ? "&" : "?")}{forwardingToken}") + requestUri.Fragment);
 
@@ -225,11 +242,12 @@ namespace net.vieapps.Services.SRP
 				dictionary["X-SRP-Host"] = requestUri.Host;
 			});
 
-			if (Global.IsVisitLogEnabled)
+			// forward the request
+			if (Global.IsDebugLogEnabled)
 			{
 				var userAgent = context.GetUserAgent();
 				var referer = context.GetReferUrl();
-				await context.WriteLogsAsync("Http.Visits", $"Forwarding request is starting [{method}: {requestUri} => {uri}] {context.Request.Protocol}\r\n- IP: {context.Connection.RemoteIpAddress}{(string.IsNullOrWhiteSpace(userAgent) ? "" : $"\r\n- Agent: {userAgent}")}{(string.IsNullOrWhiteSpace(referer) ? "" : $"\r\n- Referer: {referer}")}" + (Global.IsDebugLogEnabled ? $"\r\n- Headers:\r\n\t{headers.ToString("\r\n\t", kvp => $"{kvp.Key}: {kvp.Value}")}" : "")).ConfigureAwait(false);
+				await context.WriteLogsAsync("Http.Forwards", $"Forwarding request is starting [{method}: {requestUri} => {uri}] {context.Request.Protocol}\r\n- IP: {context.Connection.RemoteIpAddress}{(string.IsNullOrWhiteSpace(userAgent) ? "" : $"\r\n- Agent: {userAgent}")}{(string.IsNullOrWhiteSpace(referer) ? "" : $"\r\n- Referer: {referer}")}" + (Global.IsDebugLogEnabled ? $"\r\n- Headers:\r\n\t{headers.ToString("\r\n\t", kvp => $"{kvp.Key}: {kvp.Value}")}" : "")).ConfigureAwait(false);
 			}
 
 			try
@@ -273,7 +291,7 @@ namespace net.vieapps.Services.SRP
 				}
 
 				if (Global.IsDebugLogEnabled)
-					await context.WriteLogsAsync("Http.Visits", $"Forwarding request is completed\r\n- Response: {stream.GetType()}\r\n- Status: {statusCode}\r\n- Headers:\r\n\t{headers.ToString("\r\n\t", kvp => $"{kvp.Key}: {kvp.Value}")}").ConfigureAwait(false);
+					await context.WriteLogsAsync("Http.Forwards", $"Forwarding request is completed\r\n- Response: {stream.GetType()}\r\n- Status: {statusCode}\r\n- Headers:\r\n\t{headers.ToString("\r\n\t", kvp => $"{kvp.Key}: {kvp.Value}")}").ConfigureAwait(false);
 			}
 			catch (RemoteServerErrorException ex)
 			{
@@ -288,11 +306,9 @@ namespace net.vieapps.Services.SRP
 			{
 				context.ShowError(ex.GetHttpStatusCode(), ex.Message, ex.GetTypeName(true), context.GetCorrelationID(), ex, Global.IsDebugLogEnabled);
 			}
-			finally
-			{
-				if (Global.IsVisitLogEnabled)
-					await context.WriteVisitFinishingLogAsync().ConfigureAwait(false);
-			}
+
+			if (Global.IsVisitLogEnabled)
+				await context.WriteVisitFinishingLogAsync().ConfigureAwait(false);
 		}
 		#endregion
 
