@@ -2,7 +2,6 @@
 using System;
 using System.Net;
 using System.IO;
-using System.IO.Compression;
 using System.Linq;
 using System.Diagnostics;
 using System.Threading;
@@ -235,11 +234,7 @@ namespace net.vieapps.Services.SRP
             var uri = new Uri(map.ForwardTo + requestUri.PathAndQuery + (string.IsNullOrWhiteSpace(forwardingToken) ? "" : $"{(requestUri.PathAndQuery.IndexOf("?") > -1 ? "&" : "?")}{forwardingToken}") + requestUri.Fragment);
 
             var method = context.Request.Method;
-            var headers = context.Request.Headers.ToDictionary(dictionary =>
-            {
-                dictionary.Keys.Where(key => key.IsStartsWith("x-forwarded") || key.IsStartsWith("x-original")).Concat(new[] { "Host", "Connection" }).ToList().ForEach(key => dictionary.Remove(key));
-                dictionary["X-SRP-Host"] = $"{requestUri.Host}{(requestUri.Port != 80 && requestUri.Port != 443 ? $":{requestUri.Port}" : "")}";
-            });
+            var headers = context.Request.Headers.ToDictionary().Copy(context.Request.Headers.Keys.Where(key => key.IsStartsWith("x-forwarded") || key.IsStartsWith("x-original")).Concat(new[] { "Host", "Connection" }), dictionary => dictionary["X-SRP-Host"] = $"{requestUri.Host}{(requestUri.Port != 80 && requestUri.Port != 443 ? $":{requestUri.Port}" : "")}");
 
             // forward the request
             if (Global.IsDebugLogEnabled)
@@ -253,7 +248,7 @@ namespace net.vieapps.Services.SRP
             try
             {
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(Global.CancellationToken, context.RequestAborted);
-                using var response = await uri.SendHttpRequestAsync(method, headers, method.IsEquals("POST") || method.IsEquals("PUT") || method.IsEquals("PATCH") ? await context.ReadTextAsync(cts.Token).ConfigureAwait(false) : null, this.ForwardingTimeout, cts.Token).ConfigureAwait(false);
+                using var response = await uri.SendHttpRequestAsync(method, headers, method.IsEquals("POST") || method.IsEquals("PUT") || method.IsEquals("PATCH") ? await context.ReadAsync(cts.Token).ConfigureAwait(false) : null, this.ForwardingTimeout, cts.Token).ConfigureAwait(false);
                 statusCode = response.StatusCode;
                 headers = response.GetHeaders(new[] { "Connection", "Content-Encoding", "Transfer-Encoding", "Set-Cookie" }, dictionary => dictionary["Server"] = AspNetCoreUtilityService.ServerName);
                 context.SetResponseHeaders((int)statusCode, headers);
@@ -263,9 +258,12 @@ namespace net.vieapps.Services.SRP
             catch (RemoteServerException ex)
             {
                 statusCode = ex.StatusCode;
-                headers = ex.Headers.Where(kvp => !kvp.Key.IsEquals("Connection") && !kvp.Key.IsEquals("Transfer-Encoding")).ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+                headers = ex.Headers.Copy(new[] { "Connection", "Content-Encoding", "Transfer-Encoding", "Set-Cookie" });
                 if (ex.IsSuccessStatusCode)
+                {
                     context.SetResponseHeaders((int)statusCode, headers);
+                    context.AppendCookies(ex.Headers.TryGetValue("Set-Cookie", out var value) && !string.IsNullOrWhiteSpace(value) ? value.ToList().GetCookies(uri.Host, cookie => cookie.Domain = string.IsNullOrWhiteSpace(cookie.Domain) || cookie.Domain.IsEquals(uri.Host) ? requestUri.Host : cookie.Domain) : new CookieCollection());
+                }
                 else
                     context.ShowError((int)statusCode, ex.Body ?? context.GetHttpStatusCodeBody((int)statusCode, ex.Message, ex.GetTypeName(true), context.GetCorrelationID(), ex.GetStack(), Global.IsDebugLogEnabled), headers);
             }
