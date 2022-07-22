@@ -27,7 +27,7 @@ namespace net.vieapps.Services.SRP
 
 		public IConfiguration Configuration { get; }
 
-		LogLevel LogLevel => this.Configuration.GetAppSetting("Logging/LogLevel/Default", UtilityService.GetAppSetting("Logs:Level", "Information")).TryToEnum(out LogLevel logLevel) ? logLevel : LogLevel.Information;
+		public LogLevel LogLevel => this.Configuration.GetAppSetting("Logging/LogLevel/Default", UtilityService.GetAppSetting("Logs:Level", "Information")).TryToEnum(out LogLevel logLevel) ? logLevel : LogLevel.Information;
 
 		bool IsCacheEnabled { get; } = !"true".IsEquals(UtilityService.GetAppSetting("Cache:Disabled"));
 
