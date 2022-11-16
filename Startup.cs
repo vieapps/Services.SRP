@@ -73,7 +73,7 @@ namespace net.vieapps.Services.SRP
 			var logPath = UtilityService.GetAppSetting("Path:Logs");
 			if ("true".IsEquals(UtilityService.GetAppSetting("Logs:WriteFiles", "true")) && !string.IsNullOrWhiteSpace(logPath) && Directory.Exists(logPath))
 			{
-				logPath = Path.Combine(logPath, "{Hour}" + $"_{Global.ServiceName.ToLower()}.http.txt");
+				logPath = Path.Combine(logPath, "{Hour}" + $"_{Global.ServiceName.ToLower()}.http.pid-{Environment.ProcessId}.txt");
 				loggerFactory.AddFile(logPath, this.LogLevel);
 			}
 			else

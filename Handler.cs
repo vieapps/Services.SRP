@@ -286,7 +286,7 @@ namespace net.vieapps.Services.SRP
 		#region Process static file requests
 		async Task ProcessStaticRequestAsync(HttpContext context)
 		{
-			//  prepare
+			// prepare
 			context.SetItem("PipelineStopwatch", Stopwatch.StartNew());
 			var requestUri = context.GetRequestUri();
 
