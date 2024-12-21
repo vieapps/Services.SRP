@@ -33,7 +33,7 @@ namespace net.vieapps.Services.SRP
 
 		string DefaultFile { get; set; } = "index.html";
 
-		string LoadBalancingHealthCheckUrl { get; } = UtilityService.GetAppSetting("HealthCheckUrl", "/load-balancing-health-check");
+		string LoadBalancerHealthCheckURL { get; } = UtilityService.GetAppSetting("LoadBalancer:HealthCheckURL", "/load-balancer-health-check");
 
 		int ForwardingTimeout { get; } = Int32.TryParse(UtilityService.GetAppSetting("SRP:ForwardingTimeout", "90"), out var timeout) && timeout > 0 ? timeout : 90;
 
@@ -162,8 +162,8 @@ namespace net.vieapps.Services.SRP
 				// prepare
 				var requestPath = context.Request.Path.Value;
 
-				// load balancing health check
-				if (requestPath.IsEquals(this.LoadBalancingHealthCheckUrl))
+				// health check
+				if (requestPath.IsEquals(this.LoadBalancerHealthCheckURL))
 					await context.WriteAsync("OK", "text/plain", null, 0, null, TimeSpan.Zero, null, Global.CancellationTokenSource.Token).ConfigureAwait(false);
 
 				// maps
