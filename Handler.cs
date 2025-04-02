@@ -72,77 +72,77 @@ namespace net.vieapps.Services.SRP
 			// individual settings
 			if (config.Section.SelectNodes("map") is XmlNodeList maps)
 				maps.ToList()
-						.Where(info => !string.IsNullOrWhiteSpace(info.Attributes["host"]?.Value))
-						.Select(info =>
+				.Where(info => !string.IsNullOrWhiteSpace(info.Attributes["host"]?.Value))
+				.Select(info =>
+				{
+					var map = new Map
+					{
+						Host = info.Attributes["host"].Value,
+						RedirectTo = info.Attributes["redirectTo"]?.Value,
+						ForwardTo = info.Attributes["forwardTo"]?.Value,
+						ForwardTokenName = info.Attributes["forwardTokenName"]?.Value,
+						ForwardTokenValue = info.Attributes["forwardTokenValue"]?.Value,
+						Directory = info.Attributes["directory"]?.Value,
+						NotFound = info.Attributes["notFound"]?.Value,
+						RedirectToNoneWWW = string.IsNullOrWhiteSpace(info.Attributes["redirectToNoneWWW"]?.Value) ? this.RedirectToNoneWWW : "true".IsEquals(info.Attributes["redirectToNoneWWW"]?.Value),
+						RedirectToHTTPS = string.IsNullOrWhiteSpace(info.Attributes["redirectToHTTPS"]?.Value) ? this.RedirectToHTTPS : "true".IsEquals(info.Attributes["redirectToHTTPS"].Value)
+					};
+					if (info.SelectNodes("param") is XmlNodeList parameters)
+						parameters.ToList().ForEach(param =>
 						{
-							var map = new Map
-							{
-								Host = info.Attributes["host"].Value,
-								RedirectTo = info.Attributes["redirectTo"]?.Value,
-								ForwardTo = info.Attributes["forwardTo"]?.Value,
-								ForwardTokenName = info.Attributes["forwardTokenName"]?.Value,
-								ForwardTokenValue = info.Attributes["forwardTokenValue"]?.Value,
-								Directory = info.Attributes["directory"]?.Value,
-								NotFound = info.Attributes["notFound"]?.Value,
-								RedirectToNoneWWW = string.IsNullOrWhiteSpace(info.Attributes["redirectToNoneWWW"]?.Value) ? this.RedirectToNoneWWW : "true".IsEquals(info.Attributes["redirectToNoneWWW"]?.Value),
-								RedirectToHTTPS = string.IsNullOrWhiteSpace(info.Attributes["redirectToHTTPS"]?.Value) ? this.RedirectToHTTPS : "true".IsEquals(info.Attributes["redirectToHTTPS"].Value)
-							};
-							if (info.SelectNodes("param") is XmlNodeList parameters)
-								parameters.ToList().ForEach(param =>
-												{
-													var name = param.Attributes["name"]?.Value;
-													if (!string.IsNullOrWhiteSpace(name) && map.Parameters.FindIndex(p => p.Name.IsEquals(name)) < 0)
-														map.Parameters.Add(new MapParameter
-														{
-															Name = name,
-															Default = param.Attributes["default"]?.Value,
-															Attribute = param.Attributes["attribute"]?.Value
-														});
-												});
-							return map;
-						})
-						.Where(map => !string.IsNullOrWhiteSpace(map.RedirectTo) || !string.IsNullOrWhiteSpace(map.ForwardTo) || !string.IsNullOrWhiteSpace(map.Directory))
-						.ForEach(map =>
-						{
-							if (!string.IsNullOrWhiteSpace(map.RedirectTo))
-							{
-								var location = map.RedirectTo.Trim();
-								while (location.EndsWith("/"))
-									location = location.Left(location.Length - 1);
-								if (!location.IsStartsWith("http://") && !location.IsStartsWith("https://"))
-									location = "https://" + location;
-								map.Host.Trim().ToLower().ToArray("|", true).ForEach(host => Handler.RedirectMaps[host] = map.Clone(m =>
-												{
-													m.Host = host;
-													m.RedirectTo = location;
-												}));
-							}
-							else if (!string.IsNullOrWhiteSpace(map.ForwardTo))
-							{
-								var location = map.ForwardTo.Trim();
-								while (location.EndsWith("/"))
-									location = location.Left(location.Length - 1);
-								if (!location.IsStartsWith("http://") && !location.IsStartsWith("https://"))
-									location = "https://" + location;
-								map.Host.Trim().ToLower().ToArray("|", true).ForEach(host => Handler.ForwardMaps[host] = map.Clone(m =>
-												{
-													m.Host = host;
-													m.ForwardTo = location;
-												}));
-							}
-							else
-							{
-								var directory = map.Directory;
-								if (directory.IndexOf(Path.DirectorySeparatorChar) < 0)
-									directory = Path.Combine(this.DefaultDirectory, directory);
-								directory = Directory.Exists(directory) ? directory : Path.Combine(this.DefaultDirectory, directory);
-								map.Host.Trim().ToLower().ToArray("|", true).ForEach(host => Handler.StaticMaps[host] = map.Clone(m =>
-												{
-													m.Host = host;
-													m.Directory = directory;
-												}));
-							}
+							var name = param.Attributes["name"]?.Value;
+							if (!string.IsNullOrWhiteSpace(name) && map.Parameters.FindIndex(p => p.Name.IsEquals(name)) < 0)
+								map.Parameters.Add(new MapParameter
+								{
+									Name = name,
+									Default = param.Attributes["default"]?.Value,
+									Attribute = param.Attributes["attribute"]?.Value
+								});
 						});
+					return map;
+				})
+				.Where(map => !string.IsNullOrWhiteSpace(map.RedirectTo) || !string.IsNullOrWhiteSpace(map.ForwardTo) || !string.IsNullOrWhiteSpace(map.Directory))
+				.ForEach(map =>
+				{
+					if (!string.IsNullOrWhiteSpace(map.RedirectTo))
+					{
+						var location = map.RedirectTo.Trim();
+						while (location.EndsWith("/"))
+							location = location.Left(location.Length - 1);
+						if (!location.IsStartsWith("http://") && !location.IsStartsWith("https://"))
+							location = "https://" + location;
+						map.Host.Trim().ToLower().ToArray("|", true).ForEach(host => Handler.RedirectMaps[host] = map.Clone(m =>
+						{
+							m.Host = host;
+							m.RedirectTo = location;
+						}));
+					}
+					else if (!string.IsNullOrWhiteSpace(map.ForwardTo))
+					{
+						var location = map.ForwardTo.Trim();
+						while (location.EndsWith("/"))
+							location = location.Left(location.Length - 1);
+						if (!location.IsStartsWith("http://") && !location.IsStartsWith("https://"))
+							location = "https://" + location;
+						map.Host.Trim().ToLower().ToArray("|", true).ForEach(host => Handler.ForwardMaps[host] = map.Clone(m =>
+						{
+							m.Host = host;
+							m.ForwardTo = location;
+						}));
+					}
+					else
+					{
+						var directory = map.Directory;
+						if (directory.IndexOf(Path.DirectorySeparatorChar) < 0)
+							directory = Path.Combine(this.DefaultDirectory, directory);
+						directory = Directory.Exists(directory) ? directory : Path.Combine(this.DefaultDirectory, directory);
+						map.Host.Trim().ToLower().ToArray("|", true).ForEach(host => Handler.StaticMaps[host] = map.Clone(m =>
+						{
+							m.Host = host;
+							m.Directory = directory;
+						}));
+					}
+				});
 		}
 
 		public async Task Invoke(HttpContext context)
@@ -402,7 +402,8 @@ namespace net.vieapps.Services.SRP
 				{ "Last-Modified", $"{fileInfo.LastWriteTime.ToHttpString()}" },
 				{ "Cache-Control", "public" },
 				{ "Expires", $"{DateTime.Now.AddMinutes(13).ToHttpString()}" },
-				{ "X-Correlation-ID", context.GetCorrelationID() }
+				{ "X-Correlation-ID", context.GetCorrelationID() },
+				{ "X-Node", Global.NodeID }
 			};
 
 			// write text files (HTML, JSON, CSS)
@@ -414,7 +415,7 @@ namespace net.vieapps.Services.SRP
 				// prepare social tags
 				if (fileInfo.Extension.IsStartsWith(".htm") && map.Parameters.Count > 0)
 				{
-					var parameters = new List<Tuple<string, string>>();
+					var parameters = new List<(string Name, string Attribute)>();
 
 					var requestInfo = context.GetQueryParameter("ngx");
 					if (!string.IsNullOrWhiteSpace(requestInfo) && !string.IsNullOrWhiteSpace(context.GetQueryParameter(requestInfo)))
@@ -458,22 +459,22 @@ namespace net.vieapps.Services.SRP
 								CorrelationID = context.GetCorrelationID()
 							}, cts.Token).ConfigureAwait(false);
 
-							map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, string.IsNullOrWhiteSpace(parameter.Attribute) ? parameter.Default ?? "" : serviceObject.Get<string>(parameter.Attribute) ?? parameter.Default ?? "")));
+							map.Parameters.ForEach(parameter => parameters.Add(new (parameter.Name, string.IsNullOrWhiteSpace(parameter.Attribute) ? parameter.Default ?? "" : serviceObject.Get<string>(parameter.Attribute) ?? parameter.Default ?? "")));
 							if (Global.IsDebugLogEnabled)
-								await context.WriteLogsAsync("Http.Statics", $"Parameters of static HTML file:\r\n\t+ {parameters.Select(parameter => $"{parameter.Item1}: {parameter.Item2}").Join("\r\n\t+ ")}").ConfigureAwait(false);
+								await context.WriteLogsAsync("Http.Statics", $"Parameters of static HTML file:\r\n\t+ {parameters.Select(parameter => $"{parameter.Name}: {parameter.Attribute}").Join("\r\n\t+ ")}").ConfigureAwait(false);
 						}
 						catch (Exception ex)
 						{
-							map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, parameter.Default ?? "")));
+							map.Parameters.ForEach(parameter => parameters.Add(new (parameter.Name, parameter.Default ?? "")));
 							await context.WriteLogsAsync("Http.Statics", $"Error occurred while processing parameters => {ex.Message}", ex).ConfigureAwait(false);
 						}
 					else
-						map.Parameters.ForEach(parameter => parameters.Add(new Tuple<string, string>(parameter.Name, parameter.Default ?? "")));
+						map.Parameters.ForEach(parameter => parameters.Add(new (parameter.Name, parameter.Default ?? "")));
 
 					if (parameters.Count > 0)
 					{
 						var html = content.GetString();
-						parameters.ForEach(parameter => html = html.Replace(StringComparison.OrdinalIgnoreCase, "{{" + parameter.Item1 + "}}", parameter.Item2));
+						parameters.ForEach(parameter => html = html.Replace(StringComparison.OrdinalIgnoreCase, "{{" + parameter.Name + "}}", parameter.Attribute));
 						content = html.ToBytes();
 					}
 				}
