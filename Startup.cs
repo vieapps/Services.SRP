@@ -38,7 +38,7 @@ namespace net.vieapps.Services.SRP
 			// mandatory services
 			services
 				.AddHttpContextAccessor()
-				.AddResponseCompression(options => options.EnableForHttps = true)
+				.AddResponseCompression(options => Global.PrepareResponseCompression(options))
 				.AddLogging(builder => builder.SetMinimumLevel(this.LogLevel));
 
 			if (this.IsCacheEnabled)
