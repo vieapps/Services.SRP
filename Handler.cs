@@ -250,7 +250,7 @@ namespace net.vieapps.Services.SRP
 				using var cts = CancellationTokenSource.CreateLinkedTokenSource(Global.CancellationToken, context.RequestAborted);
 				using var response = await uri.SendHttpRequestAsync(method, headers, method.IsEquals("POST") || method.IsEquals("PUT") || method.IsEquals("PATCH") ? await context.ReadAsync(cts.Token).ConfigureAwait(false) : null, this.ForwardingTimeout, cts.Token).ConfigureAwait(false);
 				statusCode = response.StatusCode;
-				headers = response.GetHeaders(new[] { "Connection", "Content-Encoding", "Transfer-Encoding", "Set-Cookie" }, dictionary => dictionary["Server"] = AspNetCoreUtilityService.ServerName);
+				headers = response.GetHeaders(["Connection", "Content-Encoding", "Transfer-Encoding", "Set-Cookie"], dictionary => dictionary["Server"] = AspNetCoreUtilityService.ServerName);
 				context.SetResponseHeaders((int)statusCode, headers);
 				context.AppendCookies(response.GetCookies(cookie => cookie.Domain = string.IsNullOrWhiteSpace(cookie.Domain) || cookie.Domain.IsEquals(uri.Host) ? requestUri.Host : cookie.Domain));
 				await response.CopyToAsync(context.Response.Body, cts.Token).ConfigureAwait(false);
@@ -258,7 +258,7 @@ namespace net.vieapps.Services.SRP
 			catch (RemoteServerException ex)
 			{
 				statusCode = ex.StatusCode;
-				headers = ex.Headers.Copy(new[] { "Connection", "Content-Encoding", "Transfer-Encoding", "Set-Cookie" });
+				headers = ex.Headers.Copy(["Connection", "Content-Encoding", "Transfer-Encoding", "Set-Cookie"]);
 				if (ex.IsSuccessStatusCode)
 				{
 					context.SetResponseHeaders((int)statusCode, headers);
@@ -348,7 +348,7 @@ namespace net.vieapps.Services.SRP
 			filePath += filePath.EndsWith(Path.DirectorySeparatorChar) ? this.DefaultFile : "";
 
 			// check to reduce traffic
-			var eTag = "srp#" + $"{requestUri}".ToLower().GenerateUUID();
+			var eTag = $"vieapps#{requestUri.AbsoluteUri.ToLower().GenerateUUID()}";
 			if (eTag.IsEquals(context.GetHeaderParameter("If-None-Match")))
 			{
 				var isNotModified = true;
