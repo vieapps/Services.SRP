@@ -234,7 +234,7 @@ namespace net.vieapps.Services.SRP
 			var uri = new Uri(map.ForwardTo + requestUri.PathAndQuery + (string.IsNullOrWhiteSpace(forwardingToken) ? "" : $"{(requestUri.PathAndQuery.IndexOf("?") > -1 ? "&" : "?")}{forwardingToken}") + requestUri.Fragment);
 
 			var method = context.Request.Method;
-			var headers = context.Request.Headers.ToDictionary().Copy(context.Request.Headers.Keys.Where(key => key.IsStartsWith("x-forwarded") || key.IsStartsWith("x-original")).Concat(new[] { "Host", "Connection" }), dictionary => dictionary["X-SRP-Host"] = $"{requestUri.Host}{(requestUri.Port != 80 && requestUri.Port != 443 ? $":{requestUri.Port}" : "")}");
+			var headers = context.Request.Headers.ToDictionary().Copy(context.Request.Headers.Keys.Where(key => key.IsStartsWith("x-forwarded") || key.IsStartsWith("x-original")).Concat(["Host", "Connection"]), dictionary => dictionary["X-SRP-Host"] = $"{requestUri.Host}{(requestUri.Port != 80 && requestUri.Port != 443 ? $":{requestUri.Port}" : "")}");
 
 			// forward the request
 			if (Global.IsDebugLogEnabled)
