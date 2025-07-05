@@ -498,43 +498,22 @@ namespace net.vieapps.Services.SRP
 		internal static void Connect(int waitingTimes = 6789)
 		{
 			Global.Logger.LogInformation($"Attempting to connect to API Gateway Router [{new Uri(Router.GetRouterStrInfo()).GetResolvedURI()}]");
-			Global.Connect(
+			Global.Connect
+			(
 				(sender, arguments) =>
 				{
 					Global.PrimaryInterCommunicateMessageUpdater?.Dispose();
-					Global.PrimaryInterCommunicateMessageUpdater = Router.IncomingChannel.RealmProxy.Services
-						.GetSubject<CommunicateMessage>("messages.services.srp")
-						.Subscribe(
-							async message =>
-							{
-								try
-								{
-									await Handler.ProcessInterCommunicateMessageAsync(message).ConfigureAwait(false);
-								}
-								catch (Exception ex)
-								{
-									await Global.WriteLogsAsync(Global.Logger, "Http.Updates", $"Error occurred while processing an inter-communicate message: {ex.Message} => {message?.ToJson().ToString(Global.IsDebugLogEnabled ? Newtonsoft.Json.Formatting.Indented : Newtonsoft.Json.Formatting.None)}", ex, Global.ServiceName).ConfigureAwait(false);
-								}
-							},
-							async exception => await Global.WriteLogsAsync(Global.Logger, "Http.Updates", $"Error occurred while fetching an inter-communicate message: {exception.Message}", exception).ConfigureAwait(false)
-						);
+					Global.PrimaryInterCommunicateMessageUpdater = Router.IncomingChannel.RealmProxy.Services.GetSubject<CommunicateMessage>("messages.services.srp").Subscribe
+					(
+						message => Global.NodeID.IsEquals(message.ExcludedNodeID) ? Task.CompletedTask : Handler.ProcessInterCommunicateMessageAsync(message),
+						exception => Global.WriteLogsAsync(Global.Logger, "Http.Updates", $"Error occurred while fetching an inter-communicate message: {exception.Message}", exception)
+					);
 					Global.SecondaryInterCommunicateMessageUpdater?.Dispose();
-					Global.SecondaryInterCommunicateMessageUpdater = Router.IncomingChannel.RealmProxy.Services
-						.GetSubject<CommunicateMessage>("messages.services.apigateway")
-						.Subscribe(
-							async message =>
-							{
-								try
-								{
-									await Handler.ProcessAPIGatewayCommunicateMessageAsync(message).ConfigureAwait(false);
-								}
-								catch (Exception ex)
-								{
-									await Global.WriteLogsAsync(Global.Logger, "Http.Updates", $"Error occurred while processing an inter-communicate message of API Gateway: {ex.Message} => {message?.ToJson().ToString(Global.IsDebugLogEnabled ? Newtonsoft.Json.Formatting.Indented : Newtonsoft.Json.Formatting.None)}", ex, Global.ServiceName).ConfigureAwait(false);
-								}
-							},
-							async exception => await Global.WriteLogsAsync(Global.Logger, "Http.Updates", $"Error occurred while fetching an inter-communicate message of API Gateway: {exception.Message}", exception).ConfigureAwait(false)
-						);
+					Global.SecondaryInterCommunicateMessageUpdater = Router.IncomingChannel.RealmProxy.Services.GetSubject<CommunicateMessage>("messages.services.apigateway").Subscribe
+					(
+						message => message.Type.IsEquals("Service#RequestInfo") ? Global.SendServiceInfoAsync() : Task.CompletedTask,
+						exception => Global.WriteLogsAsync(Global.Logger, "Http.Updates", $"Error occurred while fetching an inter-communicate message of API Gateway: {exception.Message}", exception)
+					);
 				},
 				(sender, arguments) => Task.Run(async () => await Global.RegisterServiceAsync().ConfigureAwait(false)).ContinueWith(async _ =>
 				{
@@ -593,11 +572,6 @@ namespace net.vieapps.Services.SRP
 				}
 			}
 		}
-
-		static Task ProcessAPIGatewayCommunicateMessageAsync(CommunicateMessage message)
-			=> message.Type.IsEquals("Service#RequestInfo")
-				? Global.SendServiceInfoAsync()
-				: Task.CompletedTask;
 		#endregion
 
 	}
