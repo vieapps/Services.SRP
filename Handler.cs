@@ -503,14 +503,14 @@ namespace net.vieapps.Services.SRP
 				(sender, arguments) =>
 				{
 					Global.PrimaryInterCommunicateMessageUpdater?.Dispose();
-					Global.PrimaryInterCommunicateMessageUpdater = Router.IncomingChannel.RealmProxy.Services.GetSubject<CommunicateMessage>("messages.services.srp").Subscribe
-					(
+					Global.PrimaryInterCommunicateMessageUpdater = Router.IncomingChannel.Subscribe<CommunicateMessage>(
+						"messages.services.srp",
 						message => Global.NodeID.IsEquals(message.ExcludedNodeID) ? Task.CompletedTask : Handler.ProcessInterCommunicateMessageAsync(message),
 						exception => Global.WriteLogsAsync(Global.Logger, "Http.Updates", $"Error occurred while fetching an inter-communicate message: {exception.Message}", exception)
 					);
 					Global.SecondaryInterCommunicateMessageUpdater?.Dispose();
-					Global.SecondaryInterCommunicateMessageUpdater = Router.IncomingChannel.RealmProxy.Services.GetSubject<CommunicateMessage>("messages.services.apigateway").Subscribe
-					(
+					Global.SecondaryInterCommunicateMessageUpdater = Router.IncomingChannel.Subscribe<CommunicateMessage>(
+						"messages.services.apigateway",
 						message => message.Type.IsEquals("Service#RequestInfo") ? Global.SendServiceInfoAsync() : Task.CompletedTask,
 						exception => Global.WriteLogsAsync(Global.Logger, "Http.Updates", $"Error occurred while fetching an inter-communicate message of API Gateway: {exception.Message}", exception)
 					);
@@ -544,8 +544,6 @@ namespace net.vieapps.Services.SRP
 		internal static void Disconnect()
 		{
 			Global.UnregisterService();
-			Global.PrimaryInterCommunicateMessageUpdater?.Dispose();
-			Global.SecondaryInterCommunicateMessageUpdater?.Dispose();
 			Global.Disconnect();
 		}
 

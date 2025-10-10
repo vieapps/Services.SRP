@@ -152,15 +152,16 @@ namespace net.vieapps.Services.SRP
 			});
 
 			// on stopping
-			appLifetime.ApplicationStopping.Register(() => Global.Logger = loggerFactory.CreateLogger<Startup>());
+			appLifetime.ApplicationStopping.Register(() =>
+			{
+				Global.Logger = loggerFactory.CreateLogger<Startup>();
+				if (this.IsRouterEnabled)
+					Handler.Disconnect();
+			});
 
 			// on stopped
 			appLifetime.ApplicationStopped.Register(() =>
 			{
-				if (this.IsRouterEnabled)
-					Handler.Disconnect();
-				Global.CancellationTokenSource.Cancel();
-				Global.CancellationTokenSource.Dispose();
 				Global.Logger.LogInformation($"The {Global.ServiceName} HTTP service was stopped");
 			});
 
