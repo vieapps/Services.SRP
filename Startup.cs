@@ -17,15 +17,12 @@ using net.vieapps.Components.Utility;
 
 namespace net.vieapps.Services.SRP
 {
-	public class Startup
+	public class Startup(IConfiguration configuration)
 	{
 		public static void Main(string[] args)
 			=> WebHost.CreateDefaultBuilder(args).Run<Startup>(args);
 
-		public Startup(IConfiguration configuration)
-			=> this.Configuration = configuration;
-
-		public IConfiguration Configuration { get; }
+		public IConfiguration Configuration { get; } = configuration;
 
 		public LogLevel LogLevel => this.Configuration.GetAppSetting("Logging/LogLevel/Default", UtilityService.GetAppSetting("Logs:Level", "Information")).TryToEnum(out LogLevel logLevel) ? logLevel : LogLevel.Information;
 
@@ -71,11 +68,8 @@ namespace net.vieapps.Services.SRP
 
 			var loggerFactory = appBuilder.ApplicationServices.GetService<ILoggerFactory>();
 			var logPath = UtilityService.GetAppSetting("Path:Logs");
-			if ("true".IsEquals(UtilityService.GetAppSetting("Logs:WriteFiles", "true")) && !string.IsNullOrWhiteSpace(logPath) && Directory.Exists(logPath))
-			{
-				logPath = Path.Combine(logPath, "{Hour}" + $"_{Global.ServiceName.ToLower()}.http.pid-{Environment.ProcessId}.txt");
-				loggerFactory.AddFile(logPath, this.LogLevel);
-			}
+			if (!string.IsNullOrWhiteSpace(logPath) && Directory.Exists(logPath))
+				loggerFactory.AddFile(logPath, $"{Global.ServiceName}.http.pid_{Environment.ProcessId}");
 			else
 				logPath = null;
 
