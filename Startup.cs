@@ -69,7 +69,7 @@ namespace net.vieapps.Services.SRP
 			var loggerFactory = appBuilder.ApplicationServices.GetService<ILoggerFactory>();
 			var logPath = UtilityService.GetAppSetting("Path:Logs");
 			if (!string.IsNullOrWhiteSpace(logPath) && Directory.Exists(logPath))
-				loggerFactory.AddFile(logPath, $"{Global.ServiceName}.http.pid_{Environment.ProcessId}");
+				loggerFactory.AddFile(logPath, $"{Global.ServiceName}.http.{Environment.ProcessId}");
 			else
 				logPath = null;
 
