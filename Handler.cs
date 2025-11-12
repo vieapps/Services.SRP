@@ -301,7 +301,7 @@ namespace net.vieapps.Services.SRP
 			{
 				// process request of static files
 				if (Global.StaticSegments.Contains(requestUri.GetRequestPathSegments().First()))
-					await context.ProcessStaticFileRequestAsync(context.GetContentEncoding()).ConfigureAwait(false);
+					await context.ProcessStaticFileRequestAsync().ConfigureAwait(false);
 
 				// process request of other files
 				else

@@ -4,7 +4,6 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Diagnostics;
-using Microsoft.AspNetCore;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Hosting;
@@ -20,7 +19,13 @@ namespace net.vieapps.Services.SRP
 	public class Startup(IConfiguration configuration)
 	{
 		public static void Main(string[] args)
-			=> WebHost.CreateDefaultBuilder(args).Run<Startup>(args);
+			=> WebApplication.CreateBuilder(args).Run
+			(
+				args,
+				configuration => new Startup(configuration),
+				(startup, services) => startup.ConfigureServices(services),
+				(startup, app) => startup.Configure(app, app.Lifetime, app.Environment)
+			);
 
 		public IConfiguration Configuration { get; } = configuration;
 
