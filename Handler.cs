@@ -54,8 +54,8 @@ namespace net.vieapps.Services.SRP
 					$"=> Redirect to HTTPs: {this.RedirectToHTTPS}" + "\r\n" +
 					$"=> Default directory: {this.DefaultDirectory}" + "\r\n" +
 					$"=> Default file: {this.DefaultFile}" + "\r\n" +
-					$"=> Redirect maps: {(Handler.RedirectMaps.Count < 1 ? "None" : $"\r\n\t+ {Handler.RedirectMaps.Select(kvp => $"{kvp.Key} => {kvp.Value.RedirectTo}").Join("\r\n\t+ ")}")}" + "\r\n" +
-					$"=> Forward maps: {(Handler.ForwardMaps.Count < 1 ? "None" : $"\r\n\t+ {Handler.ForwardMaps.Select(kvp => $"{kvp.Key} => {kvp.Value.ForwardTo + $" ({kvp.Value.ForwardTokenName ?? "None"}/{kvp.Value.ForwardTokenValue ?? "None"})"}").Join("\r\n\t+ ")}")}" + "\r\n" +
+					$"=> Redirect maps: {(Handler.RedirectMaps.Count < 1 ? "None" : $"\r\n\t+ {Handler.RedirectMaps.Select(kvp => $"{kvp.Key} => {kvp.Value.RedirectTo}" + (kvp.Value.Parameters.Count < 1 ? "" : "\r\n\t> Parameters:\r\n\t> > " + kvp.Value.Parameters.Select(p => $"{p.Name} -> {p.Attribute} [{p.Default}]").Join("\r\n\t> > "))).Join("\r\n\t+ ")}")}" + "\r\n" +
+					$"=> Forward maps: {(Handler.ForwardMaps.Count < 1 ? "None" : $"\r\n\t+ {Handler.ForwardMaps.Select(kvp => $"{kvp.Key} => {kvp.Value.ForwardTo + $" ({kvp.Value.ForwardTokenName ?? "None"}/{kvp.Value.ForwardTokenValue ?? "None"})"}" + (kvp.Value.Parameters.Count < 1 ? "" : "\r\n\t> Parameters:\r\n\t> > " + kvp.Value.Parameters.Select(p => $"{p.Name} -> {p.Attribute} [{p.Default}]").Join("\r\n\t> > "))).Join("\r\n\t+ ")}")}" + "\r\n" +
 					$"=> Static maps: {(Handler.StaticMaps.Count < 1 ? "None" : $"\r\n\t+ {Handler.StaticMaps.Select(kvp => $"{kvp.Key} => {kvp.Value.Directory + $" ({kvp.Value.RedirectToNoneWWW}/{kvp.Value.RedirectToHTTPS}/{kvp.Value.NotFound ?? "None"})"}" + (kvp.Value.Parameters.Count < 1 ? "" : "\r\n\t> Parameters:\r\n\t> > " + kvp.Value.Parameters.Select(p => $"{p.Name} -> {p.Attribute} [{p.Default}]").Join("\r\n\t> > "))).Join("\r\n\t+ ")}")}"
 			);
 		}
@@ -85,20 +85,20 @@ namespace net.vieapps.Services.SRP
 						Directory = info.Attributes["directory"]?.Value,
 						NotFound = info.Attributes["notFound"]?.Value,
 						RedirectToNoneWWW = string.IsNullOrWhiteSpace(info.Attributes["redirectToNoneWWW"]?.Value) ? this.RedirectToNoneWWW : "true".IsEquals(info.Attributes["redirectToNoneWWW"]?.Value),
-						RedirectToHTTPS = string.IsNullOrWhiteSpace(info.Attributes["redirectToHTTPS"]?.Value) ? this.RedirectToHTTPS : "true".IsEquals(info.Attributes["redirectToHTTPS"].Value)
+						RedirectToHTTPS = string.IsNullOrWhiteSpace(info.Attributes["redirectToHTTPS"]?.Value) ? this.RedirectToHTTPS : "true".IsEquals(info.Attributes["redirectToHTTPS"].Value),
+						RedirectPermanently = !"false".IsEquals(info.Attributes["redirectPermanently"]?.Value)
 					};
-					if (info.SelectNodes("param") is XmlNodeList parameters)
-						parameters.ToList().ForEach(param =>
-						{
-							var name = param.Attributes["name"]?.Value;
-							if (!string.IsNullOrWhiteSpace(name) && map.Parameters.FindIndex(p => p.Name.IsEquals(name)) < 0)
-								map.Parameters.Add(new MapParameter
-								{
-									Name = name,
-									Default = param.Attributes["default"]?.Value,
-									Attribute = param.Attributes["attribute"]?.Value
-								});
-						});
+					info.ChildNodes?.ToList().ForEach(param =>
+					{
+						var name = param.Attributes["name"]?.Value;
+						if (!string.IsNullOrWhiteSpace(name) && map.Parameters.FindIndex(p => p.Name.IsEquals(name)) < 0)
+							map.Parameters.Add(new MapParameter
+							{
+								Name = name,
+								Attribute = param.Attributes["attribute"]?.Value,
+								Default = param.Attributes["default"]?.Value
+							});
+					});
 					return map;
 				})
 				.Where(map => !string.IsNullOrWhiteSpace(map.RedirectTo) || !string.IsNullOrWhiteSpace(map.ForwardTo) || !string.IsNullOrWhiteSpace(map.Directory))
@@ -106,41 +106,28 @@ namespace net.vieapps.Services.SRP
 				{
 					if (!string.IsNullOrWhiteSpace(map.RedirectTo))
 					{
-						var location = map.RedirectTo.Trim();
-						while (location.EndsWith("/"))
-							location = location.Left(location.Length - 1);
-						if (!location.IsStartsWith("http://") && !location.IsStartsWith("https://"))
-							location = "https://" + location;
-						map.Host.Trim().ToLower().ToArray("|", true).ForEach(host => Handler.RedirectMaps[host] = map.Clone(m =>
-						{
-							m.Host = host;
-							m.RedirectTo = location;
-						}));
+						map.RedirectTo = map.RedirectTo.Trim();
+						while (map.RedirectTo.EndsWith("/"))
+							map.RedirectTo = map.RedirectTo.Left(map.RedirectTo.Length - 1);
+						if (!map.RedirectTo.IsStartsWith("http://") && !map.RedirectTo.IsStartsWith("https://"))
+							map.RedirectTo = "https://" + map.RedirectTo;
+						map.Host.Trim().ToLower().ToArray("|", true).ForEach(host => Handler.RedirectMaps[host] = map.Clone(m => m.Host = host));
 					}
 					else if (!string.IsNullOrWhiteSpace(map.ForwardTo))
 					{
-						var location = map.ForwardTo.Trim();
-						while (location.EndsWith("/"))
-							location = location.Left(location.Length - 1);
-						if (!location.IsStartsWith("http://") && !location.IsStartsWith("https://"))
-							location = "https://" + location;
-						map.Host.Trim().ToLower().ToArray("|", true).ForEach(host => Handler.ForwardMaps[host] = map.Clone(m =>
-						{
-							m.Host = host;
-							m.ForwardTo = location;
-						}));
+						map.ForwardTo = map.ForwardTo.Trim();
+						while (map.ForwardTo.EndsWith("/"))
+							map.ForwardTo = map.ForwardTo.Left(map.ForwardTo.Length - 1);
+						if (!map.ForwardTo.IsStartsWith("http://") && !map.ForwardTo.IsStartsWith("https://"))
+							map.ForwardTo = "https://" + map.ForwardTo;
+						map.Host.Trim().ToLower().ToArray("|", true).ForEach(host => Handler.ForwardMaps[host] = map.Clone(m => m.Host = host));
 					}
 					else
 					{
-						var directory = map.Directory;
-						if (directory.IndexOf(Path.DirectorySeparatorChar) < 0)
-							directory = Path.Combine(this.DefaultDirectory, directory);
-						directory = Directory.Exists(directory) ? directory : Path.Combine(this.DefaultDirectory, directory);
-						map.Host.Trim().ToLower().ToArray("|", true).ForEach(host => Handler.StaticMaps[host] = map.Clone(m =>
-						{
-							m.Host = host;
-							m.Directory = directory;
-						}));
+						if (map.Directory.IndexOf(Path.DirectorySeparatorChar) < 0)
+							map.Directory = Path.Combine(this.DefaultDirectory, map.Directory);
+						map.Directory = Directory.Exists(map.Directory) ? map.Directory : Path.Combine(this.DefaultDirectory, map.Directory);
+						map.Host.Trim().ToLower().ToArray("|", true).ForEach(host => Handler.StaticMaps[host] = map.Clone(m => m.Host = host));
 					}
 				});
 		}
@@ -189,15 +176,30 @@ namespace net.vieapps.Services.SRP
 				// other requests
 				else
 				{
-					var requestUri = context.GetRequestUri();
-					if (Handler.RedirectMaps.Get(requestUri.Host, out var map))
+					var requestURI = context.GetRequestUri();
+					if (Handler.RedirectMaps.Get(requestURI.Host, out var map))
 					{
-						if (Global.IsDebugLogEnabled)
-							await context.WriteLogsAsync("Http.Redirects", $"Redirect to other domain ({requestUri} => {map.RedirectTo + requestUri.PathAndQuery})").ConfigureAwait(false);
-						context.Redirect(new Uri(map.RedirectTo + requestUri.PathAndQuery + requestUri.Fragment), true);
+						var redirectURL = map.RedirectTo + requestURI.PathAndQuery + requestURI.Fragment;
+						if (map.Parameters.Count > 0)
+						{
+							var parameter = map.Parameters.FirstOrDefault(param => param.Name.IsStartsWith("c:")
+								? requestPath.IsContains(param.Name.Right(param.Name.Length - 2))
+								: param.Name.IsStartsWith("e:")
+									? requestPath.IsEndsWith(param.Name.Right(param.Name.Length - 2))
+									: requestPath.IsStartsWith(param.Name.IsStartsWith("s:") ? param.Name.Right(param.Name.Length - 2) : param.Name)
+								);
+							var location = parameter?.Attribute ?? parameter?.Default;
+							if (!string.IsNullOrWhiteSpace(location))
+								redirectURL = location.IsStartsWith("https://") || location.IsStartsWith("http://") ? location : map.RedirectTo + location + requestURI.Fragment;
+						}
+						redirectURL = map.RedirectToHTTPS ? redirectURL.Replace("http://", "https://") : redirectURL;
+						redirectURL = map.RedirectToNoneWWW ? redirectURL.Replace("://www.", "://") : redirectURL;
+						if (Global.IsDebugLogEnabled || context.ContainsKey("x-logs"))
+							await context.WriteLogsAsync("Http.Redirects", $"Redirect to other location ({requestURI} => {redirectURL})").ConfigureAwait(false);
+						context.Redirect(redirectURL, map.RedirectPermanently);
 					}
 					else
-						await (Handler.ForwardMaps.ContainsKey(requestUri.Host) || (!Handler.StaticMaps.ContainsKey(requestUri.Host) && Handler.ForwardMaps.ContainsKey("*")) ? this.ProcessForwardRequestAsync(context) : this.ProcessStaticRequestAsync(context)).ConfigureAwait(false);
+						await (Handler.ForwardMaps.ContainsKey(requestURI.Host) || (!Handler.StaticMaps.ContainsKey(requestURI.Host) && Handler.ForwardMaps.ContainsKey("*")) ? this.ProcessForwardRequestAsync(context) : this.ProcessStaticRequestAsync(context)).ConfigureAwait(false);
 				}
 			}
 		}
@@ -597,7 +599,9 @@ namespace net.vieapps.Services.SRP
 
 		public bool RedirectToHTTPS { get; set; } = false;
 
-		public List<MapParameter> Parameters { get; } = new List<MapParameter>();
+		public bool RedirectPermanently { get; set; } = true;
+
+		public List<MapParameter> Parameters { get; set; } = [];
 	}
 
 	public class MapParameter
