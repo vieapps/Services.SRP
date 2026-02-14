@@ -156,6 +156,7 @@ namespace net.vieapps.Services.SRP
 				Global.Logger = loggerFactory.CreateLogger<Startup>();
 				if (this.IsRouterEnabled)
 					Handler.Disconnect();
+				Extensions.ShutdownLogsAsync().Execute(true);
 			});
 
 			// on stopped
