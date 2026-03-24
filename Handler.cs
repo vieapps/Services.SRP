@@ -399,98 +399,87 @@ namespace net.vieapps.Services.SRP
 			var mimeType = fileInfo.GetMimeType();
 			var headers = new Dictionary<string, string>
 			{
-				{ "Content-Type", $"{mimeType}; charset=utf-8" },
+				{ "Content-Type", mimeType + (mimeType.IsStartsWith("text/") || mimeType.IsEndsWith("/json") || mimeType.IsEndsWith("/javascript") ? "; charset=utf-8" : "") },
 				{ "ETag", eTag },
-				{ "Last-Modified", $"{fileInfo.LastWriteTime.ToHttpString()}" },
+				{ "Last-Modified", fileInfo.LastWriteTime.ToHttpString() },
 				{ "Cache-Control", "public" },
-				{ "Expires", $"{DateTime.Now.AddMinutes(13).ToHttpString()}" },
+				{ "Expires", DateTime.Now.AddMinutes(13).ToHttpString() },
 				{ "X-Correlation-ID", context.GetCorrelationID() },
 				{ "X-Node", Global.NodeID }
 			};
 
-			// write text files (HTML, JSON, CSS)
-			if (mimeType.IsStartsWith("text/") || fileInfo.Extension.IsStartsWith(".json") || fileInfo.Extension.IsStartsWith(".js"))
+			// write HTML files
+			if (mimeType.IsStartsWith("text/") && fileInfo.Extension.IsStartsWith(".htm") && map.Parameters.Count > 0)
 			{
-				// get file content
-				var content = await Global.GetStaticFileContentAsync(fileInfo, cts.Token).ConfigureAwait(false);
-
 				// prepare social tags
-				if (fileInfo.Extension.IsStartsWith(".htm") && map.Parameters.Count > 0)
-				{
-					var parameters = new List<(string Name, string Attribute)>();
+				var parameters = new List<(string Name, string Attribute)>();
 
-					var requestInfo = context.GetQueryParameter("ngx");
-					if (!string.IsNullOrWhiteSpace(requestInfo) && !string.IsNullOrWhiteSpace(context.GetQueryParameter(requestInfo)))
+				var requestInfo = context.GetQueryParameter("ngx");
+				if (!string.IsNullOrWhiteSpace(requestInfo) && !string.IsNullOrWhiteSpace(context.GetQueryParameter(requestInfo)))
+				{
+					try
 					{
+						requestInfo = context.GetQueryParameter(requestInfo).Url64Decode();
+						requestInfo = QueryHelpers.ParseQuery(requestInfo.Right(requestInfo.Length - requestInfo.IndexOf("?")))["x-request"].ToString().Url64Decode();
+					}
+					catch (Exception ex)
+					{
+						requestInfo = null;
+						await context.WriteLogsAsync("Http.Statics", $"Error occurred while parsing parameters => {ex.Message}", ex).ConfigureAwait(false);
+					}
+				}
+				else
+				{
+					requestInfo = context.GetQueryParameter("x-request");
+					if (!string.IsNullOrWhiteSpace(requestInfo))
 						try
 						{
-							requestInfo = context.GetQueryParameter(requestInfo).Url64Decode();
-							requestInfo = QueryHelpers.ParseQuery(requestInfo.Right(requestInfo.Length - requestInfo.IndexOf("?")))["x-request"].ToString().Url64Decode();
+							requestInfo = requestInfo.Url64Decode();
 						}
 						catch (Exception ex)
 						{
 							requestInfo = null;
 							await context.WriteLogsAsync("Http.Statics", $"Error occurred while parsing parameters => {ex.Message}", ex).ConfigureAwait(false);
 						}
-					}
-					else
-					{
-						requestInfo = context.GetQueryParameter("x-request");
-						if (!string.IsNullOrWhiteSpace(requestInfo))
-							try
-							{
-								requestInfo = requestInfo.Url64Decode();
-							}
-							catch (Exception ex)
-							{
-								requestInfo = null;
-								await context.WriteLogsAsync("Http.Statics", $"Error occurred while parsing parameters => {ex.Message}", ex).ConfigureAwait(false);
-							}
-					}
-
-					if (!string.IsNullOrWhiteSpace(requestInfo))
-						try
-						{
-							var serviceInfo = JObject.Parse(requestInfo);
-							var serviceObject = await context.CallServiceAsync(new RequestInfo(context.GetSession(), serviceInfo.Get<string>("Service"), serviceInfo.Get<string>("Object"), "GET")
-							{
-								Query = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-								{
-									{ "object-identity", serviceInfo.Get<string>("ID") }
-								},
-								CorrelationID = context.GetCorrelationID()
-							}, cts.Token).ConfigureAwait(false);
-
-							map.Parameters.ForEach(parameter => parameters.Add(new (parameter.Name, string.IsNullOrWhiteSpace(parameter.Attribute) ? parameter.Default ?? "" : serviceObject.Get<string>(parameter.Attribute) ?? parameter.Default ?? "")));
-							if (Global.IsDebugLogEnabled)
-								await context.WriteLogsAsync("Http.Statics", $"Parameters of static HTML file:\r\n\t+ {parameters.Select(parameter => $"{parameter.Name}: {parameter.Attribute}").Join("\r\n\t+ ")}").ConfigureAwait(false);
-						}
-						catch (Exception ex)
-						{
-							map.Parameters.ForEach(parameter => parameters.Add(new (parameter.Name, parameter.Default ?? "")));
-							await context.WriteLogsAsync("Http.Statics", $"Error occurred while processing parameters => {ex.Message}", ex).ConfigureAwait(false);
-						}
-					else
-						map.Parameters.ForEach(parameter => parameters.Add(new (parameter.Name, parameter.Default ?? "")));
-
-					if (parameters.Count > 0)
-					{
-						var html = content.GetString();
-						parameters.ForEach(parameter => html = html.Replace(StringComparison.OrdinalIgnoreCase, "{{" + parameter.Name + "}}", parameter.Attribute));
-						content = html.ToBytes();
-					}
 				}
 
+				if (!string.IsNullOrWhiteSpace(requestInfo))
+					try
+					{
+						var serviceInfo = JObject.Parse(requestInfo);
+						var serviceObject = await context.CallServiceAsync(new RequestInfo(context.GetSession(), serviceInfo.Get<string>("Service"), serviceInfo.Get<string>("Object"), "GET")
+						{
+							Query = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+							{
+								{ "object-identity", serviceInfo.Get<string>("ID") }
+							},
+							CorrelationID = context.GetCorrelationID()
+						}, cts.Token).ConfigureAwait(false);
+
+						map.Parameters.ForEach(parameter => parameters.Add(new (parameter.Name, string.IsNullOrWhiteSpace(parameter.Attribute) ? parameter.Default ?? "" : serviceObject.Get<string>(parameter.Attribute) ?? parameter.Default ?? "")));
+						if (Global.IsDebugLogEnabled)
+							await context.WriteLogsAsync("Http.Statics", $"Parameters of static HTML file:\r\n\t+ {parameters.Select(parameter => $"{parameter.Name}: {parameter.Attribute}").Join("\r\n\t+ ")}").ConfigureAwait(false);
+					}
+					catch (Exception ex)
+					{
+						map.Parameters.ForEach(parameter => parameters.Add(new (parameter.Name, parameter.Default ?? "")));
+						await context.WriteLogsAsync("Http.Statics", $"Error occurred while processing parameters => {ex.Message}", ex).ConfigureAwait(false);
+					}
+				else
+					map.Parameters.ForEach(parameter => parameters.Add(new (parameter.Name, parameter.Default ?? "")));
+
+				// get & normalize content
+				var html = await fileInfo.ReadAsTextAsync(cts.Token).ConfigureAwait(false);
+				if (parameters.Count > 0)
+					parameters.ForEach(parameter => html = html.Replace(StringComparison.OrdinalIgnoreCase, "{{" + parameter.Name + "}}", parameter.Attribute));
+
 				// write to response
-				await context.WriteAsync(content, headers, cts.Token).ConfigureAwait(false);
+				await context.WriteAsync(html, headers, cts.Token).ConfigureAwait(false);
 			}
 
 			// other files
 			else
-			{
-				using var stream = new FileStream(fileInfo.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, AspNetCoreUtilityService.BufferSize, true);
-				await context.WriteAsync(stream, headers, cts.Token).ConfigureAwait(false);
-			}
+				await context.SendFileAsync(fileInfo, headers, cts.Token).ConfigureAwait(false);
 
 			return fileInfo;
 		}
