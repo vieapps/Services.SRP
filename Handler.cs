@@ -310,9 +310,7 @@ namespace net.vieapps.Services.SRP
 				else
 					try
 					{
-						var fileInfo = await this.ProcessFileRequestAsync(context).ConfigureAwait(false);
-						if (fileInfo != null && writeLogs)
-							await context.WriteLogsAsync("Http.Statics", $"Success response ({fileInfo.FullName})").ConfigureAwait(false);
+						await this.ProcessFileRequestAsync(context).ConfigureAwait(false);
 					}
 					catch (Exception ex)
 					{
@@ -325,7 +323,7 @@ namespace net.vieapps.Services.SRP
 				await context.WriteVisitFinishingLogAsync().ConfigureAwait(false);
 		}
 
-		async Task<FileInfo> ProcessFileRequestAsync(HttpContext context)
+		async Task ProcessFileRequestAsync(HttpContext context)
 		{
 			// prepare
 			var isDebugLogEnabled = Global.IsDebugLogEnabled || context.ContainsKey("x-logs");
@@ -343,7 +341,7 @@ namespace net.vieapps.Services.SRP
 				if (isDebugLogEnabled)
 					await context.WriteLogsAsync("Http.Redirects", $"Redirect to HTTPS/None WWW ({requestUri} => {url})");
 				context.Redirect(url, true);
-				return null;
+				return;
 			}
 
 			// prepare file info
@@ -375,7 +373,7 @@ namespace net.vieapps.Services.SRP
 					context.SetResponseHeaders((int)HttpStatusCode.NotModified, eTag, lastModifed, "public", context.GetCorrelationID());
 					if (isDebugLogEnabled)
 						await context.WriteLogsAsync("Http.Statics", $"Success response with status code 304 to reduce traffic ({filePath})").ConfigureAwait(false);
-					return fileInfo;
+					return;
 				}
 			}
 
@@ -385,8 +383,8 @@ namespace net.vieapps.Services.SRP
 			{
 				if (!string.IsNullOrWhiteSpace(map?.NotFound))
 					fileInfo = new FileInfo(Path.Combine(Path.IsPathRooted(map.Directory) ? map.Directory : Path.Combine(this.DefaultDirectory, map.Directory), map.NotFound));
-				else if (File.Exists(Path.Combine(filePath, $"{Path.DirectorySeparatorChar}", this.DefaultFile)))
-					fileInfo = new FileInfo(Path.Combine(filePath, $"{Path.DirectorySeparatorChar}", this.DefaultFile));
+				else if (File.Exists(Path.Combine(filePath, Path.DirectorySeparatorChar.ToString(), this.DefaultFile)))
+					fileInfo = new FileInfo(Path.Combine(filePath, Path.DirectorySeparatorChar.ToString(), this.DefaultFile));
 			}
 
 			if (!fileInfo.Exists)
@@ -397,96 +395,92 @@ namespace net.vieapps.Services.SRP
 			}
 
 			// prepare
-			var mimeType = fileInfo.GetMimeType();
-			var headers = new Dictionary<string, string>
+			var contentType = fileInfo.GetMimeType();
+			var isText = contentType.IsStartsWith("text/") || contentType.IsEndsWith("/json") || contentType.IsEndsWith("/javascript");
+			var maxAge = 3 * 60 * 60;
+			var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 			{
-				{ "Content-Type", mimeType + (mimeType.IsStartsWith("text/") || mimeType.IsEndsWith("/json") || mimeType.IsEndsWith("/javascript") ? "; charset=utf-8" : "") },
-				{ "ETag", eTag },
-				{ "Last-Modified", fileInfo.LastWriteTime.ToHttpString() },
-				{ "Cache-Control", "public" },
-				{ "Expires", DateTime.Now.AddMinutes(13).ToHttpString() },
-				{ "X-Mode", "SEND-FILE" },
-				{ "X-Correlation-ID", context.GetCorrelationID() },
-				{ "X-Node", Global.NodeID }
+				["Content-Type"] = contentType + (isText ? "; charset=utf-8" : ""),
+				["ETag"] = eTag,
+				["Last-Modified"] = fileInfo.LastWriteTime.ToHttpString(),
+				["Cache-Control"] = context.GetHttpCacheControl(false, maxAge, maxAge, false),
+				["Expires"] = DateTime.Now.AddSeconds(maxAge).ToHttpString(),
+				["X-Mode"] = "SEND-FILE",
+				["X-Node"] = Global.NodeID,
+				["X-Correlation-ID"] = context.GetCorrelationID()
 			};
 
-			// HTML files
-			if (mimeType.IsStartsWith("text/") && fileInfo.Extension.IsStartsWith(".htm"))
+			// HTML files & social parameters
+			var parameters = new List<(string Name, string Attribute)>();
+			if (isText && fileInfo.Extension.IsStartsWith(".htm") && map.Parameters.Count > 0)
 			{
-				// prepare social tags
-				var parameters = new List<(string Name, string Attribute)>();
-				if (map.Parameters.Count > 0)
+				var requestInfo = context.GetQueryParameter("ngx");
+				if (!string.IsNullOrWhiteSpace(requestInfo) && !string.IsNullOrWhiteSpace(context.GetQueryParameter(requestInfo)))
 				{
-					var requestInfo = context.GetQueryParameter("ngx");
-					if (!string.IsNullOrWhiteSpace(requestInfo) && !string.IsNullOrWhiteSpace(context.GetQueryParameter(requestInfo)))
+					try
 					{
+						requestInfo = context.GetQueryParameter(requestInfo).Url64Decode();
+						requestInfo = QueryHelpers.ParseQuery(requestInfo.Right(requestInfo.Length - requestInfo.IndexOf("?")))["x-request"].ToString().Url64Decode();
+					}
+					catch (Exception ex)
+					{
+						requestInfo = null;
+						await context.WriteLogsAsync("Http.Statics", $"Error occurred while parsing parameters => {ex.Message}", ex).ConfigureAwait(false);
+					}
+				}
+				else
+				{
+					requestInfo = context.GetQueryParameter("x-request");
+					if (!string.IsNullOrWhiteSpace(requestInfo))
 						try
 						{
-							requestInfo = context.GetQueryParameter(requestInfo).Url64Decode();
-							requestInfo = QueryHelpers.ParseQuery(requestInfo.Right(requestInfo.Length - requestInfo.IndexOf("?")))["x-request"].ToString().Url64Decode();
+							requestInfo = requestInfo.Url64Decode();
 						}
 						catch (Exception ex)
 						{
 							requestInfo = null;
 							await context.WriteLogsAsync("Http.Statics", $"Error occurred while parsing parameters => {ex.Message}", ex).ConfigureAwait(false);
 						}
-					}
-					else
-					{
-						requestInfo = context.GetQueryParameter("x-request");
-						if (!string.IsNullOrWhiteSpace(requestInfo))
-							try
-							{
-								requestInfo = requestInfo.Url64Decode();
-							}
-							catch (Exception ex)
-							{
-								requestInfo = null;
-								await context.WriteLogsAsync("Http.Statics", $"Error occurred while parsing parameters => {ex.Message}", ex).ConfigureAwait(false);
-							}
-					}
+				}
 
-					if (!string.IsNullOrWhiteSpace(requestInfo))
-						try
+				if (!string.IsNullOrWhiteSpace(requestInfo))
+					try
+					{
+						var serviceInfo = JObject.Parse(requestInfo);
+						var serviceObject = await context.CallServiceAsync(new RequestInfo(context.GetSession(), serviceInfo.Get<string>("Service"), serviceInfo.Get<string>("Object"), "GET")
 						{
-							var serviceInfo = JObject.Parse(requestInfo);
-							var serviceObject = await context.CallServiceAsync(new RequestInfo(context.GetSession(), serviceInfo.Get<string>("Service"), serviceInfo.Get<string>("Object"), "GET")
-							{
-								Query = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+							Query = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 								{
 									{ "object-identity", serviceInfo.Get<string>("ID") }
 								},
-								CorrelationID = context.GetCorrelationID()
-							}, context.RequestAborted).ConfigureAwait(false);
+							CorrelationID = context.GetCorrelationID()
+						}, context.RequestAborted).ConfigureAwait(false);
 
-							map.Parameters.ForEach(parameter => parameters.Add(new (parameter.Name, string.IsNullOrWhiteSpace(parameter.Attribute) ? parameter.Default ?? "" : serviceObject.Get<string>(parameter.Attribute) ?? parameter.Default ?? "")));
-							if (Global.IsDebugLogEnabled)
-								await context.WriteLogsAsync("Http.Statics", $"Parameters of static HTML file:\r\n\t+ {parameters.Select(parameter => $"{parameter.Name}: {parameter.Attribute}").Join("\r\n\t+ ")}").ConfigureAwait(false);
-						}
-						catch (Exception ex)
-						{
-							map.Parameters.ForEach(parameter => parameters.Add(new (parameter.Name, parameter.Default ?? "")));
-							await context.WriteLogsAsync("Http.Statics", $"Error occurred while processing parameters => {ex.Message}", ex).ConfigureAwait(false);
-						}
-					else
-						map.Parameters.ForEach(parameter => parameters.Add(new (parameter.Name, parameter.Default ?? "")));
-				}
-
-				// HTML with normalized content
-				if (parameters.Count > 0)
-				{
-					var html = await fileInfo.ReadAsTextAsync(context.RequestAborted).ConfigureAwait(false);
-					parameters.ForEach(parameter => html = html.Replace(StringComparison.OrdinalIgnoreCase, "{{" + parameter.Name + "}}", parameter.Attribute));
-					headers["X-Mode"] = "HTML";
-					context.SetResponseHeaders((int)HttpStatusCode.OK, headers);
-					await context.WriteAsync(html, context.RequestAborted).ConfigureAwait(false);
-					return fileInfo;
-				}
+						map.Parameters.ForEach(parameter => parameters.Add(new(parameter.Name, string.IsNullOrWhiteSpace(parameter.Attribute) ? parameter.Default ?? "" : serviceObject.Get<string>(parameter.Attribute) ?? parameter.Default ?? "")));
+						if (Global.IsDebugLogEnabled)
+							await context.WriteLogsAsync("Http.Statics", $"Parameters of static HTML file:\r\n\t+ {parameters.Select(parameter => $"{parameter.Name}: {parameter.Attribute}").Join("\r\n\t+ ")}").ConfigureAwait(false);
+					}
+					catch (Exception ex)
+					{
+						map.Parameters.ForEach(parameter => parameters.Add(new(parameter.Name, parameter.Default ?? "")));
+						await context.WriteLogsAsync("Http.Statics", $"Error occurred while processing parameters => {ex.Message}", ex).ConfigureAwait(false);
+					}
+				else
+					map.Parameters.ForEach(parameter => parameters.Add(new(parameter.Name, parameter.Default ?? "")));
 			}
 
-			// other files
-			await context.SendFileAsync(fileInfo, headers, context.RequestAborted).ConfigureAwait(false);
-			return fileInfo;
+			if (parameters.Count > 0)
+			{
+				var html = await fileInfo.ReadAsTextAsync(context.RequestAborted).ConfigureAwait(false);
+				parameters.ForEach(parameter => html = html.Replace(StringComparison.OrdinalIgnoreCase, "{{" + parameter.Name + "}}", parameter.Attribute));
+				headers["X-Mode"] = "WRITE-FILE";
+				await context.WriteAsync(html.ToBytes(), headers, context.RequestAborted).ConfigureAwait(false);
+			}
+			else
+				await context.SendFileAsync(fileInfo, headers, context.RequestAborted).ConfigureAwait(false);
+
+			if (isDebugLogEnabled)
+				await context.WriteLogsAsync("Http.Statics", $"Success response ({fileInfo.FullName})").ConfigureAwait(false);
 		}
 		#endregion
 
