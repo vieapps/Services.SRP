@@ -165,9 +165,7 @@ namespace net.vieapps.Services.SRP
 						var token = context.GetQueryParameter("token");
 						if (string.IsNullOrWhiteSpace(token) || !token.IsEquals(UtilityService.GetAppSetting("SRP:Token")))
 							maps.ForEach(map => map["RedirectTo"] = map["ForwardTo"] = map["ForwardTokenName"] = map["ForwardTokenValue"] = map["Directory"] = "*****");
-
-						using var cts = CancellationTokenSource.CreateLinkedTokenSource(Global.CancellationToken, context.RequestAborted);
-						await context.WriteAsync(maps, cts.Token).ConfigureAwait(false);
+						await context.WriteAsync(maps.ToString(Newtonsoft.Json.Formatting.None), "application/json", new Dictionary<string, string> { ["Cache-Control"] = context.GetHttpCacheControl(true) }, context.RequestAborted).ConfigureAwait(false);
 					}
 					else
 						context.ShowError(404, $"Not Found [{context.GetUri()}]", "FileNotFoundException", context.GetCorrelationID());
