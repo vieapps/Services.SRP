@@ -471,7 +471,7 @@ namespace net.vieapps.Services.SRP
 			{
 				var html = await fileInfo.ReadAsTextAsync(context.RequestAborted).ConfigureAwait(false);
 				parameters.ForEach(parameter => html = html.Replace(StringComparison.OrdinalIgnoreCase, "{{" + parameter.Name + "}}", parameter.Attribute));
-				headers["X-Mode"] = "WRITE-FILE";
+				headers["X-Mode"] = "COPY-FILE";
 				await context.WriteAsync(html.ToBytes(), headers, context.RequestAborted).ConfigureAwait(false);
 			}
 			else
